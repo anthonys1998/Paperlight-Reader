@@ -7,10 +7,18 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Brightness4
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.List
@@ -21,23 +29,22 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.epub.EpubBook
 import com.paperlight.reader.epub.EpubBookParser
 import com.paperlight.reader.epub.EpubChapter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.math.roundToInt
 import java.io.File
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -45,7 +52,7 @@ import java.io.File
 fun EpubReaderScreen(
     book: BookEntity,
     onBack: () -> Unit,
-    onProgress: (Float, Int, Int) -> Unit
+    onProgress: (Float) -> Unit
 ) {
     val context = LocalContext.current
     val mainView = LocalView.current
@@ -54,7 +61,6 @@ fun EpubReaderScreen(
     var scrollMode by remember { mutableStateOf(preferences.getBoolean("scrollMode", false)) }
     var flip by remember { mutableStateOf(preferences.getBoolean("pageFlip", true)) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
-    var measuringView by remember { mutableStateOf<WebView?>(null) }
     var reportedChapter by remember(book.id) { mutableIntStateOf(-1) }
     var fraction by remember(book.id) { mutableFloatStateOf(0f) }
     var parsed by remember(book.id) { mutableStateOf<EpubBook?>(null) }
@@ -96,36 +102,16 @@ fun EpubReaderScreen(
         return
     }
 
-    var counts by remember(publication, viewport, fontScale) { mutableStateOf<List<Int>?>(null) }
-    LaunchedEffect(publication, viewport, measuringView, fontScale) {
-        val view = measuringView ?: return@LaunchedEffect
-        if (viewport.width == 0 || viewport.height == 0) return@LaunchedEffect
-        val measured = mutableListOf<Int>()
-        for (entry in publication.chapters) {
-            val html = withContext(Dispatchers.IO) { runCatching { chapterHtml(entry) }.getOrNull() }
-                ?: return@LaunchedEffect
-            val pages = withTimeoutOrNull(8_000) {
-                measureChapter(view, entry, html, fontScale)
-            } ?: return@LaunchedEffect
-            measured.add(pages)
-        }
-        counts = measured
+    val savedPosition = if (chapterIndex == publication.chapters.lastIndex && fraction >= 1f) 1f
+        else (chapterIndex + fraction * .9999f) / publication.chapters.size
+    LaunchedEffect(reportedChapter, chapterIndex, savedPosition) {
+        if (reportedChapter == chapterIndex) latestProgress(savedPosition)
     }
-    val measuredChapterPages = counts?.get(chapterIndex)
-    val chapterPages = if (!scrollMode && reportedChapter == chapterIndex) pageCount else measuredChapterPages
-    val bookTotal = counts?.let { pages ->
-        pages.sum() - pages[chapterIndex] + (chapterPages ?: pages[chapterIndex])
-    } ?: 0
-    val bookPage = counts?.let { pages ->
-        val lastPage = (chapterPages ?: pages[chapterIndex]) - 1
-        val indexInChapter = if (scrollMode) (fraction * lastPage).roundToInt() else page
-        pages.take(chapterIndex).sum() + indexInChapter.coerceIn(0, lastPage) + 1
-    } ?: 0
-    val savedPosition = (chapterIndex + fraction * .9999f) / publication.chapters.size
-    LaunchedEffect(reportedChapter, chapterIndex, savedPosition, bookPage, bookTotal) {
-        if (reportedChapter == chapterIndex) latestProgress(savedPosition, bookPage, bookTotal)
+    val displayProgress = if (reportedChapter == chapterIndex) savedPosition else book.progress
+    val chapterTitles = remember(publication) {
+        val titles = publication.tableOfContents.associate { it.chapterIndex to it.title }
+        publication.chapters.mapIndexed { index, entry -> titles[index] ?: entry.title }
     }
-    val displayProgress = if (bookTotal > 0) bookPage.toFloat() / bookTotal else savedPosition
     val chapter = publication.chapters[chapterIndex]
     val background = when (themeMode) { 1 -> Color.White; 2 -> Color(0xFF171717); else -> Color(0xFFF4EBD8) }
     val foreground = if (themeMode == 2) Color(0xFFE5E0D5) else Color(0xFF29251F)
@@ -140,21 +126,10 @@ fun EpubReaderScreen(
             IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, contentDescription = "Back", tint = foreground) }
             Column(Modifier.weight(1f)) {
                 Text(publication.title, color = foreground, style = MaterialTheme.typography.titleSmall, maxLines = 1)
-                Text(chapter.title, color = foreground.copy(alpha = .7f), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                Text(chapterTitles[chapterIndex], color = foreground.copy(alpha = .7f), style = MaterialTheme.typography.labelSmall, maxLines = 1)
             }
-            Box {
-                IconButton(onClick = { showContents = true }) {
-                    Icon(Icons.Rounded.List, contentDescription = "Table of contents", tint = foreground)
-                }
-                DropdownMenu(expanded = showContents, onDismissRequest = { showContents = false }) {
-                    Text("Contents", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
-                    publication.tableOfContents.forEach { entry ->
-                        DropdownMenuItem(
-                            text = { Text(entry.title, maxLines = 2) },
-                            onClick = { if (entry.chapterIndex != chapterIndex) reportedChapter = -1; chapterIndex = entry.chapterIndex; page = 0; pageCount = 1; initialChapterFraction = 0f; isRestoringPosition = false; showContents = false }
-                        )
-                    }
-                }
+            IconButton(onClick = { showContents = true }) {
+                Icon(Icons.Rounded.List, contentDescription = "Table of contents", tint = foreground)
             }
             Box {
                 IconButton(onClick = { showThemes = true }) {
@@ -294,24 +269,7 @@ fun EpubReaderScreen(
                     }
                 }
             )
-            AndroidView(
-                modifier = Modifier.matchParentSize().alpha(0f),
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        settings.javaScriptEnabled = true
-                        settings.useWideViewPort = true
-                        settings.loadWithOverviewMode = false
-                        settings.allowFileAccess = true
-                        settings.allowContentAccess = false
-                        settings.blockNetworkLoads = true
-                        importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                        visibility = android.view.View.INVISIBLE
-                        measuringView = this
-                    }
-                },
-                onRelease = { it.destroy() },
-                update = {}
-            )
+
         }
         Row(
             Modifier.fillMaxWidth().background(background).padding(horizontal = 12.dp, vertical = 8.dp),
@@ -321,10 +279,12 @@ fun EpubReaderScreen(
                 Icon(Icons.Rounded.ChevronLeft, contentDescription = "Previous", tint = foreground)
             }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                val label = if (bookTotal > 0) "$bookPage / $bookTotal"
-                    else if (scrollMode) "Chapter ${chapterIndex + 1}"
-                    else "Chapter page ${page + 1} / $pageCount"
-                Text(label, color = foreground, style = MaterialTheme.typography.labelMedium)
+                if (!scrollMode && reportedChapter == chapterIndex) {
+                    Text("Chapter page ${page + 1} / $pageCount", color = foreground,
+                        style = MaterialTheme.typography.labelMedium)
+                }
+                Text("${(displayProgress * 100).toInt()}% of book", color = foreground,
+                    style = MaterialTheme.typography.labelSmall)
                 LinearProgressIndicator(
                     progress = { displayProgress },
                     modifier = Modifier.fillMaxWidth(.82f).padding(top = 4.dp)
@@ -332,6 +292,112 @@ fun EpubReaderScreen(
             }
             IconButton(onClick = { viewNext(webView, 1) }) {
                 Icon(Icons.Rounded.ChevronRight, contentDescription = "Next", tint = foreground)
+            }
+        }
+    }
+    if (showContents) {
+        ChapterList(
+            titles = chapterTitles,
+            currentChapter = chapterIndex,
+            background = background,
+            foreground = foreground,
+            onDismiss = { showContents = false },
+            onSelect = { target ->
+                showContents = false
+                if (target != chapterIndex) {
+                    reportedChapter = -1
+                    initialChapterFraction = 0f
+                    isRestoringPosition = true
+                    chapterIndex = target
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ChapterList(
+    titles: List<String>,
+    currentChapter: Int,
+    background: Color,
+    foreground: Color,
+    onDismiss: () -> Unit,
+    onSelect: (Int) -> Unit,
+) {
+    val nearbyChapter = (currentChapter - 3).coerceAtLeast(0)
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = nearbyChapter)
+    val scope = rememberCoroutineScope()
+    val divider = foreground.copy(alpha = .16f)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val drawerWidth = minOf(maxWidth * .85f, 440.dp)
+            Box(
+                Modifier.matchParentSize().clickable(
+                    onClickLabel = "Close chapters",
+                    onClick = onDismiss,
+                )
+            )
+            Surface(
+                modifier = Modifier.align(Alignment.CenterStart).width(drawerWidth).fillMaxHeight(),
+                color = background,
+                contentColor = foreground,
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Rounded.ArrowBack, contentDescription = "Close chapters")
+                        }
+                        Text("Chapters", style = MaterialTheme.typography.titleMedium)
+                    }
+                    HorizontalDivider(color = divider)
+                    LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
+                        itemsIndexed(titles, key = { index, _ -> index }) { index, title ->
+                            val current = index == currentChapter
+                            Row(
+                                modifier = Modifier.fillMaxWidth()
+                                    .background(if (current) foreground.copy(alpha = .08f) else background)
+                                    .semantics { selected = current }
+                                    .clickable(role = Role.Button) { onSelect(index) }
+                                    .heightIn(min = 48.dp)
+                                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                                if (current) {
+                                    Icon(Icons.Rounded.Check, contentDescription = "Current chapter", modifier = Modifier.size(18.dp))
+                                }
+                            }
+                            HorizontalDivider(color = divider)
+                        }
+                    }
+                    HorizontalDivider(color = divider)
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .clickable(role = Role.Button, onClickLabel = "Show current chapter in list") {
+                                scope.launch { listState.scrollToItem(nearbyChapter) }
+                            }
+                            .heightIn(min = 48.dp)
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            titles[currentChapter],
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text("${currentChapter + 1}/${titles.size}", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
             }
         }
     }
@@ -361,25 +427,11 @@ private fun chapterHtml(chapter: EpubChapter): String {
     return "<!doctype html>" + document
 }
 
-private suspend fun measureChapter(view: WebView, chapter: EpubChapter, html: String, scale: Float): Int? =
-    suspendCancellableCoroutine { continuation ->
-        view.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = true
-
-            override fun onPageFinished(view: WebView, url: String?) {
-                view.evaluateJavascript(buildReaderScript(0, scale, 0f, false, 0, view.width, view.height, measure = true)) {
-                    if (continuation.isActive) continuation.resume(it?.toIntOrNull()?.takeIf { count -> count > 0 })
-                }
-            }
-        }
-        loadChapter(view, chapter, html)
-    }
-
 private fun viewNext(view: WebView?, direction: Int) {
     view?.evaluateJavascript("window.paperlightMove($direction)", null)
 }
 
-private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean = false, measure: Boolean = false): String = """
+private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean = false): String = """
 (function(){
  const palettes={paper:{bg:'#F4EBD8',fg:'#29251F',link:'#405D85'},white:{bg:'#FFFFFF',fg:'#222222',link:'#315D91'},dark:{bg:'#171717',fg:'#E5E0D5',link:'#B7C9E8'}};
  let mode=${when (themeMode) { 1 -> "'white'"; 2 -> "'dark'"; else -> "'paper'" }};
@@ -394,7 +446,6 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  let currentPage=0;
  let pageTotal=1;
  let pageStride=1;
- let pageLimit=0;
  let turning=false;
  let layoutWidth=0,layoutHeight=0;
  let activeAnimation=null;
@@ -409,10 +460,14 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  // cannot change the size of either the scroll area or the page fragments.
  const viewport=document.createElement('div');
  const content=document.createElement('div');
+ const endSpacer=document.createElement('div');
+ endSpacer.setAttribute('aria-hidden','true');
+ endSpacer.style.cssText='display:none;position:absolute;top:0;width:1px;height:1px;pointer-events:none';
  viewport.id='paperlight-viewport';
  content.id='paperlight-content';
  while(document.body.firstChild) content.appendChild(document.body.firstChild);
  viewport.appendChild(content);
+ viewport.appendChild(endSpacer);
  document.body.appendChild(viewport);
  const layout=document.createElement('style');
  document.head.appendChild(layout);
@@ -450,15 +505,22 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    measurePages();
  }
  function measurePages(){
+   endSpacer.style.display='none';
    if(scrolling) return;
    pageStride=Math.max(1,viewport.clientWidth);
-   pageLimit=Math.max(0,viewport.scrollWidth-viewport.clientWidth);
-   pageTotal=Math.round(pageLimit/pageStride)+1;
+   const overflow=Math.max(0,viewport.scrollWidth-viewport.clientWidth);
+   pageTotal=Math.round(overflow/pageStride)+1;
+   // Column overflow can end inside the final page's right margin.
+   // Extend scrollable space to the page boundary without changing text layout.
+   if(pageTotal>1){
+     endSpacer.style.left=(pageTotal*pageStride-1)+'px';
+     endSpacer.style.display='block';
+   }
    currentPage=Math.min(currentPage,pageTotal-1);
  }
  function step(){return Math.max(1,scrolling?viewport.clientHeight*.9:pageStride);}
  function maxOffset(){
-   return Math.max(0,scrolling?viewport.scrollHeight-viewport.clientHeight:pageLimit);
+   return Math.max(0,scrolling?viewport.scrollHeight-viewport.clientHeight:(pageTotal-1)*pageStride);
  }
  function position(){return scrolling?viewport.scrollTop:viewport.scrollLeft;}
  function fraction(){
@@ -473,7 +535,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  function report(){if(turning) return; Paperlight.onPage(page(),total(),fraction(),$chapterIndex,scrolling);}
  function restore(progress){
    currentPage=Math.max(0,Math.min(total()-1,Math.round(progress*(total()-1))));
-   moveTo(scrolling?progress*maxOffset():Math.min(currentPage*step(),pageLimit),'instant');
+   moveTo(scrolling?progress*maxOffset():currentPage*step(),'instant');
    report();
  }
  window.paperlightSetScroll=function(next){
@@ -484,7 +546,6 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    restore(progress);
  };
  configureMode();
- if($measure) return viewport.clientHeight > 48 ? total() : null;
  let flip=$flip;
  window.paperlightSetFlip=function(enabled){flip=enabled;};
  window.paperlightMove=async function(direction){
@@ -496,7 +557,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      ? (direction>0?position()>=maxOffset()-1:position()<=1)
      : (nextPage<0||nextPage>=total());
    if(atEdge){Paperlight.onChapterTurn($chapterIndex,direction);return;}
-   const target=scrolling?position()+direction*step():Math.min(nextPage*step(),maxOffset());
+   const target=scrolling?position()+direction*step():nextPage*step();
    if(scrolling){moveTo(target,'smooth');return;}
    currentPage=nextPage;
    const generation=++motionGeneration;
@@ -533,7 +594,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    } finally {
      if(generation===motionGeneration){
        // Reassert the logical destination after the visual effect completes.
-       moveTo(Math.min(currentPage*step(),pageLimit),'instant');
+       moveTo(currentPage*step(),'instant');
        turning=false;
        report();
      }

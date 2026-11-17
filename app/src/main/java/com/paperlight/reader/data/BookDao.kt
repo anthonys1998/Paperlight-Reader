@@ -14,8 +14,8 @@ interface BookDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(book: BookEntity)
 
-    @Query("UPDATE books SET progress = :progress, chapterPage = :page, chapterPageCount = :total, lastOpenedAt = :openedAt WHERE id = :id")
-    suspend fun updateProgress(id: String, progress: Float, page: Int, total: Int, openedAt: Long = System.currentTimeMillis())
+    @Query("UPDATE books SET progress = :progress, lastOpenedAt = :openedAt WHERE id = :id")
+    suspend fun updateProgress(id: String, progress: Float, openedAt: Long = System.currentTimeMillis())
 
     @Query("DELETE FROM books WHERE id = :id")
     suspend fun deleteById(id: String)

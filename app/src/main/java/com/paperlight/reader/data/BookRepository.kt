@@ -48,8 +48,8 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
         }
     }
 
-    suspend fun updateProgress(bookId: String, progress: Float, page: Int, total: Int) = withContext(Dispatchers.IO) {
-        dao.updateProgress(bookId, progress.coerceIn(0f, 1f), page, total)
+    suspend fun updateProgress(bookId: String, progress: Float) = withContext(Dispatchers.IO) {
+        dao.updateProgress(bookId, progress.coerceIn(0f, 1f))
     }
 
     suspend fun remove(book: BookEntity) = withContext(Dispatchers.IO) {

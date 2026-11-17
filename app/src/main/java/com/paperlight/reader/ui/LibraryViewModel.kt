@@ -36,8 +36,8 @@ class LibraryViewModel(private val repository: BookRepository) : ViewModel() {
         }
     }
 
-    fun updateProgress(bookId: String, progress: Float, page: Int, total: Int) {
-        viewModelScope.launch { repository.updateProgress(bookId, progress, page, total) }
+    fun updateProgress(bookId: String, progress: Float) {
+        viewModelScope.launch { repository.updateProgress(bookId, progress) }
     }
 
     fun remove(book: BookEntity) {

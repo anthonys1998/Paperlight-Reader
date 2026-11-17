@@ -97,8 +97,8 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
             EpubReaderScreen(
                 book = opened,
                 onBack = { selectedId = null },
-                onProgress = { progress, page, total ->
-                    viewModel.updateProgress(opened.id, progress, page, total)
+                onProgress = { progress ->
+                    viewModel.updateProgress(opened.id, progress)
                 }
             )
         }
@@ -217,11 +217,10 @@ private fun BookTile(book: BookEntity, recent: Boolean, onOpen: () -> Unit, onRe
                 style = MaterialTheme.typography.labelSmall)
         }
         Text(
-            if (book.bookPageCount > 0) "${book.bookPage}/${book.bookPageCount}"
-            else "${(book.progress * 100).toInt()}%",
+            "${(book.progress * 100).toInt()}%",
             style = MaterialTheme.typography.labelSmall, maxLines = 1
         )
-        LinearProgressIndicator(progress = { if (book.bookPageCount > 0) book.bookPage.toFloat() / book.bookPageCount else book.progress }, modifier = Modifier.fillMaxWidth().height(3.dp))
+        LinearProgressIndicator(progress = { book.progress }, modifier = Modifier.fillMaxWidth().height(3.dp))
         Spacer(Modifier.height(4.dp))
         Box(Modifier.fillMaxWidth().height(6.dp).background(
             Brush.verticalGradient(listOf(Color(0xFFB77E49), Color(0xFF674024)))

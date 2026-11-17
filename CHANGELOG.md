@@ -1,3 +1,13 @@
+# 0.5.6-dev
+
+- Open chapters in a compact side drawer with the current chapter marked and a footer that returns to it.
+
+# 0.5.5-dev
+
+- Align the final page of each EPUB section to the same horizontal margins as the other pages.
+- Show page numbers for the current section and overall progress as a percentage.
+- Open contents in a scrollable sheet with the current section highlighted and EPUB chapter titles.
+
 # 0.5.4-dev
 
 - Keep an explicit page index and stable layout metrics independent of animation.
