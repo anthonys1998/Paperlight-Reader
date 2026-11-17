@@ -78,7 +78,9 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                     DocumentsContract.Document.COLUMN_MIME_TYPE
                 )
                 val result = mutableListOf<FolderBook>()
-                val pending = ArrayDeque(DocumentsContract.getTreeDocumentId(tree))
+                val pending = java.util.ArrayDeque<String>().apply {
+                    add(DocumentsContract.getTreeDocumentId(tree))
+                }
                 val visited = mutableSetOf<String>()
                 while (pending.isNotEmpty()) {
                     val directory = pending.removeFirst()
