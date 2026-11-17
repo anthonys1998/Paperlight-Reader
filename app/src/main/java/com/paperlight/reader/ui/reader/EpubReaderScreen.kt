@@ -99,7 +99,13 @@ fun EpubReaderScreen(
         val oldLightStatus = controller?.isAppearanceLightStatusBars
         val window = activity?.window
         val oldContrast = if (android.os.Build.VERSION.SDK_INT >= 29) window?.isStatusBarContrastEnforced else null
+        val oldNavContrast = if (android.os.Build.VERSION.SDK_INT >= 29) window?.isNavigationBarContrastEnforced else null
+        val oldStatusColor = window?.statusBarColor
+        val oldNavigationColor = window?.navigationBarColor
         if (android.os.Build.VERSION.SDK_INT >= 29) window?.isStatusBarContrastEnforced = false
+        if (android.os.Build.VERSION.SDK_INT >= 29) window?.isNavigationBarContrastEnforced = false
+        window?.statusBarColor = android.graphics.Color.TRANSPARENT
+        window?.navigationBarColor = android.graphics.Color.TRANSPARENT
         val oldCutoutMode = if (android.os.Build.VERSION.SDK_INT >= 28)
             window?.attributes?.layoutInDisplayCutoutMode else null
         if (android.os.Build.VERSION.SDK_INT >= 28 && window != null) {
@@ -125,6 +131,10 @@ fun EpubReaderScreen(
             if (oldBehavior != null) controller?.systemBarsBehavior = oldBehavior
             if (android.os.Build.VERSION.SDK_INT >= 29 && oldContrast != null)
                 window?.isStatusBarContrastEnforced = oldContrast
+            if (android.os.Build.VERSION.SDK_INT >= 29 && oldNavContrast != null)
+                window?.isNavigationBarContrastEnforced = oldNavContrast
+            if (oldStatusColor != null) window?.statusBarColor = oldStatusColor
+            if (oldNavigationColor != null) window?.navigationBarColor = oldNavigationColor
             if (oldLightStatus != null) controller?.isAppearanceLightStatusBars = oldLightStatus
             if (android.os.Build.VERSION.SDK_INT >= 28 && window != null && oldCutoutMode != null) {
                 window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = oldCutoutMode }
@@ -368,7 +378,7 @@ fun EpubReaderScreen(
 
     ReaderTheme(palette, dark = themeMode == 1) {
         Box(Modifier.fillMaxSize().background(background)) {
-            Box(Modifier.matchParentSize().displayCutoutPadding().padding(bottom = 23.dp)
+            Box(Modifier.matchParentSize().padding(bottom = 23.dp)
                 .onSizeChanged { viewport = it }) {
                 AndroidView(
                     modifier = Modifier.matchParentSize(),
@@ -530,9 +540,10 @@ fun EpubReaderScreen(
                 if (!scrollMode && reportedChapter == chapterIndex) "${page + 1}/$pageCount" else null,
                 displayProgress)
             if (barsVisible) {
-                Surface(Modifier.align(Alignment.TopCenter).displayCutoutPadding().fillMaxWidth().readerEdgeShadow(topBar = true),
+                Surface(Modifier.align(Alignment.TopCenter).fillMaxWidth().readerEdgeShadow(topBar = true),
                     color = palette.panel, contentColor = foreground) {
-                    Row(Modifier.heightIn(min = 52.dp).padding(horizontal = 4.dp),
+                    Row(Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
+                        .heightIn(min = 52.dp).padding(horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, contentDescription = "Back") }
                         Text(publication.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
@@ -550,9 +561,9 @@ fun EpubReaderScreen(
                         }
                     }
                 }
-                Surface(Modifier.align(Alignment.BottomCenter).padding(bottom = 23.dp).fillMaxWidth().readerEdgeShadow(topBar = false),
+                Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().readerEdgeShadow(topBar = false),
                     color = palette.panel, contentColor = foreground) {
-                    Column(Modifier.padding(horizontal = 8.dp)) {
+                    Column(Modifier.navigationBarsPadding().padding(horizontal = 8.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             IconButton(onClick = { viewNext(webView, -1) }) {
                                 Icon(Icons.Rounded.ChevronLeft, contentDescription = "Previous")
