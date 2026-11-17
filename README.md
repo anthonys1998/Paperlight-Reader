@@ -2,7 +2,7 @@
 
 Paperlight is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.5.6-dev
+## Current milestone: 0.7.0-dev
 
 ### Implemented in this source snapshot
 - Native Jetpack Compose bookshelf with equal-sized covers, title search, a last-read marker, warm light and dark palettes, and per-book progress.
@@ -12,6 +12,10 @@ Paperlight is an offline-first Android ebook reader project. Imported files are 
 - Room-backed local library metadata.
 - Initial DRM-free EPUB reader: reads EPUB 2/3 package metadata, follows spine order, loads XHTML chapters with local relative assets, and uses a horizontally paginated reading layout.
 - EPUB 3 navigation document and EPUB 2 NCX table-of-contents parsing, with a chapter jump menu.
+- Per-book EPUB bookmarks that can be added, reopened, and removed from the reader drawer.
+- Long-press EPUB text to highlight it, attach a note, or look it up in Wiktionary in the browser. Highlights and notes are local to each book.
+- The reader tools menu opens highlights and notes, searches the current EPUB, and reads the current chapter aloud using an installed Android offline voice.
+- Reading controls start hidden. Double tap the text to toggle them, or choose Single tap from Reader settings.
 - Three reading palettes: paper/sepia, white, and dark.
 - Text-size adjustment and previous/next page/chapter navigation.
 - Coarse reading progress persistence and restore (chapter plus approximate page fraction).
@@ -21,7 +25,7 @@ Paperlight is an offline-first Android ebook reader project. Imported files are 
 
 ### Not implemented yet
 - Page curl that follows your finger. Pages currently support a short perspective flip or a simple slide, triggered by the arrows or by a swipe.
-- EPUB bookmarks, highlights, notes, search, dictionary, TTS, custom fonts, and advanced typography controls. The current TOC is a basic chapter jump list, not a full hierarchical navigator.
+- EPUB custom fonts and advanced typography controls. The current TOC is a basic chapter jump list, not a full hierarchical navigator.
 - PDF reader, TXT reader, CBZ/CBR image reader.
 - MOBI/AZW3 conversion. These formats are accepted into the library but cannot yet be opened. DRM-protected Kindle files are not supported and no DRM circumvention is included.
 - Collections, reading statistics, backup/export and accessibility polish.

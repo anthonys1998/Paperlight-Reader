@@ -16,4 +16,25 @@ The project has not been compiled or run in this environment. Once opened in And
 12. Confirm non-EPUB formats are not falsely presented as readable yet.
 13. Remove a book and confirm both the imported file and its extracted EPUB cache are removed.
 
-Known first-pass limitations: no table-of-contents screen, no bookmarks/highlights/notes, no 3D page curl, incomplete handling of unusual EPUB URL encodings and scripted/fixed-layout content. The app-private storage model means uninstalling the app deletes imported copies.
+Known first-pass limitations: no finger-tracking 3D page curl, incomplete handling of unusual EPUB URL encodings and scripted/fixed-layout content. The app-private storage model means uninstalling the app deletes imported copies.
+
+
+## 0.5.4 pagination regression
+
+- Run `node tests/pagination.test.cjs` for navigation-state checks (not rendering).
+- On Android, open the supplied Lord of Mysteries volume 7 EPUB. Flip through every TOC page into the first chapter, then back.
+- In a long chapter, turn at least 20 pages in each direction with both transition options. Confirm text advances and page numbers agree.
+- Switch Pages/Scroll mid-chapter, change font size, rotate the device, then close/reopen. Verify approximate position is preserved.
+- Switch reading mode or change font size while a transition is running; verify no jump back or stuck controls.
+
+Android build and device rendering have not been executed for this revision.
+
+
+## 0.7.0 reader tools
+
+- Open an EPUB. Double tap to reveal/hide the controls while staying on the same page. Change to Single tap in Reading tools → Reader settings, reopen the book, and confirm it still works.
+- Swipe pages and scroll in Scroll mode. Long press text, adjust both handles, and save a highlight and a note. Reopen the book, change font size, then jump to the note. Edit and remove it and confirm the highlight clears.
+- With two EPUBs containing notes, change books in the Highlights & notes picker and check that edits apply to the selected book.
+- Search for a repeated word and a phrase in another chapter. Tap a result to jump to it. Try a search with no results.
+- Select a word and open Wiktionary. Return to the app and check your reading position.
+- With an Android offline voice installed, start and stop Read chapter aloud. Check that changing chapters or leaving the app stops speech.

@@ -13,7 +13,8 @@ data class EpubBook(
     val title: String,
     val author: String,
     val chapters: List<EpubChapter>,
-    val tableOfContents: List<EpubTocEntry>
+    val tableOfContents: List<EpubTocEntry>,
+    val language: String = ""
 )
 
 /** Initial DRM-free EPUB 2/3 parser; advanced/fixed-layout publications remain out of scope. */
@@ -78,11 +79,15 @@ object EpubBookParser {
         var navId: String? = null
         var title = epubFile.nameWithoutExtension
         var author = ""
+        var language = ""
         parseXml(packageFile) { p ->
             if (p.eventType == XmlPullParser.START_TAG) when (p.name) {
                 "title" -> if (p.namespace?.contains("purl.org/dc/elements") == true) {
                     val value = p.nextText().trim()
                     if (value.isNotBlank()) title = value
+                }
+                "language" -> if (p.namespace?.contains("purl.org/dc/elements") == true) {
+                    language = p.nextText().trim()
                 }
                 "creator" -> if (p.namespace?.contains("purl.org/dc/elements") == true) {
                     val value = p.nextText().trim()
@@ -127,7 +132,7 @@ object EpubBookParser {
             }
         }
         if (toc.isEmpty()) chapters.forEachIndexed { index, chapter -> toc += EpubTocEntry(chapter.title, index) }
-        return EpubBook(title, author, chapters, toc.distinctBy { it.chapterIndex })
+        return EpubBook(title, author, chapters, toc.distinctBy { it.chapterIndex }, language)
     }
 
     private fun resolveInside(root: File, base: File, href: String): File {

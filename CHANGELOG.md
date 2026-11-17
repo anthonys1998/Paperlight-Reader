@@ -1,3 +1,13 @@
+# 0.7.0-dev
+
+- Add EPUB highlights, notes, whole-book search, browser dictionary lookup, and chapter read-aloud.
+- Start with reading controls hidden and let readers choose single or double tap to toggle them.
+
+# 0.6.0-dev
+
+- Apply the selected transition when turning between EPUB chapters.
+- Add a Bookmarks tab for saving, reopening, and removing reading positions.
+
 # 0.5.6-dev
 
 - Open chapters in a compact side drawer with the current chapter marked and a footer that returns to it.

@@ -97,6 +97,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
             EpubReaderScreen(
                 book = opened,
                 onBack = { selectedId = null },
+                libraryBooks = books,
                 onProgress = { progress ->
                     viewModel.updateProgress(opened.id, progress)
                 }

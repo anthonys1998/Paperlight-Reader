@@ -56,5 +56,7 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
         File(book.localPath).delete()
         File(context.filesDir, "epub/${book.id}").deleteRecursively()
         dao.deleteById(book.id)
+        BookmarkStore(context).write(book.id, emptyList())
+        ReaderAnnotationStore(context).write(book.id, emptyList())
     }
 }
