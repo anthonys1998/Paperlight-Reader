@@ -435,7 +435,10 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    return Math.max(0,scrolling?viewport.scrollHeight-viewport.clientHeight:viewport.scrollWidth-viewport.clientWidth);
  }
  function position(){return scrolling?viewport.scrollTop:viewport.scrollLeft;}
- function fraction(){return Math.min(1,Math.max(0,position()/Math.max(1,maxOffset())));}
+ function fraction(){
+   if(!scrolling) return page()/Math.max(1,total()-1);
+   return Math.min(1,Math.max(0,position()/Math.max(1,maxOffset())));
+ }
  function total(){return Math.round(maxOffset()/step())+1;}
  function page(){return position()>=maxOffset()-1?total()-1:Math.min(total()-1,Math.round(position()/step()));}
  function moveTo(offset,behavior){
@@ -459,9 +462,14 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  window.paperlightSetFlip=function(enabled){flip=enabled;};
  window.paperlightMove=async function(direction){
    if(turning) return;
-   const atEdge=direction>0 ? position()>=maxOffset()-1 : position()<=1;
+   const nextPage=page()+direction;
+   // A partial trailing gutter can extend past the final column without
+   // adding another page. Use the same page boundaries as the counter.
+   const atEdge=scrolling
+     ? (direction>0?position()>=maxOffset()-1:position()<=1)
+     : (nextPage<0||nextPage>=total());
    if(atEdge){Paperlight.onChapterTurn($chapterIndex,direction);return;}
-   const target=scrolling?position()+direction*step():(page()+direction)*step();
+   const target=scrolling?position()+direction*step():Math.min(nextPage*step(),maxOffset());
    if(!flip||scrolling||window.matchMedia('(prefers-reduced-motion: reduce)').matches){
      moveTo(target,'smooth');
      return;
@@ -474,12 +482,12 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      await content.animate([
        {transform:'none',transformOrigin:origin,filter:'brightness(1)'},
        {transform:transform(direction*32),transformOrigin:origin,filter:'brightness(.72)'}
-     ],{duration:130,easing:'ease-in'}).finished;
+     ],{duration:130,easing:'ease-in'}).finished.catch(()=>{});
      moveTo(target,'instant');
      await content.animate([
        {transform:transform(-direction*27),transformOrigin:hinge(),filter:'brightness(.78)'},
        {transform:'none',transformOrigin:hinge(),filter:'brightness(1)'}
-     ],{duration:180,easing:'ease-out'}).finished;
+     ],{duration:180,easing:'ease-out'}).finished.catch(()=>{});
    } finally {
      turning=false;
      report();
