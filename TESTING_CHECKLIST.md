@@ -38,3 +38,12 @@ Android build and device rendering have not been executed for this revision.
 - Search for a repeated word and a phrase in another chapter. Tap a result to jump to it. Try a search with no results.
 - Select a word and open Wiktionary. Return to the app and check your reading position.
 - With an Android offline voice installed, start and stop Read chapter aloud. Check that changing chapters or leaving the app stops speech.
+
+## 0.8.0 reader appearance and EPUB navigation
+
+- Reveal the bars and check the three top controls and five bottom actions on a small screen and in landscape.
+- Switch Paper, Light, and Dark. Check the page, selection toolbar, contents, search, settings, and notes against each palette.
+- Change text size, line spacing, margins, and alignment. Import a TTF or OTF font, close and reopen the book, and check that the chosen settings persist.
+- Drag partway then release or cancel. Turn across a chapter boundary with both effects. Rotate and check the retained passage.
+- Open both EPUB 2 and EPUB 3 examples with nested contents. Tap links to two different anchors in the same chapter and to an anchor in another chapter.
+- Save and edit a note, jump to its passage, and open notes from a second book.

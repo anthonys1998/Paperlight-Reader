@@ -2,7 +2,7 @@
 
 Paperlight is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.7.0-dev
+## Current milestone: 0.8.0-dev
 
 ### Implemented in this source snapshot
 - Native Jetpack Compose bookshelf with equal-sized covers, title search, a last-read marker, warm light and dark palettes, and per-book progress.
@@ -16,6 +16,9 @@ Paperlight is an offline-first Android ebook reader project. Imported files are 
 - Long-press EPUB text to highlight it, attach a note, or look it up in Wiktionary in the browser. Highlights and notes are local to each book.
 - The reader tools menu opens highlights and notes, searches the current EPUB, and reads the current chapter aloud using an installed Android offline voice.
 - Reading controls start hidden. Double tap the text to toggle them, or choose Single tap from Reader settings.
+- Adjustable font size, line spacing, margins and alignment. Choose a generic typeface or import a TTF/OTF font.
+- Nested EPUB 2/3 contents and links to specific sections, with text-based position restoration during reflow.
+- A minimal top bar, labeled bottom actions, and a dedicated highlights and notes screen.
 - Three reading palettes: paper/sepia, white, and dark.
 - Text-size adjustment and previous/next page/chapter navigation.
 - Coarse reading progress persistence and restore (chapter plus approximate page fraction).
@@ -24,8 +27,7 @@ Paperlight is an offline-first Android ebook reader project. Imported files are 
 - App follows the system light/dark theme in the library.
 
 ### Not implemented yet
-- Page curl that follows your finger. Pages currently support a short perspective flip or a simple slide, triggered by the arrows or by a swipe.
-- EPUB custom fonts and advanced typography controls. The current TOC is a basic chapter jump list, not a full hierarchical navigator.
+- Full fixed-layout EPUB rendering and a physically modeled page curl. The current turn uses a finger-tracked perspective preview.
 - PDF reader, TXT reader, CBZ/CBR image reader.
 - MOBI/AZW3 conversion. These formats are accepted into the library but cannot yet be opened. DRM-protected Kindle files are not supported and no DRM circumvention is included.
 - Collections, reading statistics, backup/export and accessibility polish.

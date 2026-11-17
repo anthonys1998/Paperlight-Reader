@@ -6,6 +6,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,6 +112,8 @@ internal fun ReaderSearchDialog(
 @Composable
 internal fun ReaderNotesDialog(
     book: BookEntity,
+    chapterTitles: List<String>,
+    palette: ReaderPalette,
     otherBooks: List<BookEntity>,
     annotations: List<ReaderAnnotation>,
     otherBook: BookEntity?,
@@ -117,58 +125,104 @@ internal fun ReaderNotesDialog(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val otherNotes = otherBook?.let { readOther(it.id) }.orEmpty()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Highlights & notes") },
-        text = {
-            LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                item { Text(book.title, style = MaterialTheme.typography.titleSmall) }
-                if (annotations.isEmpty()) item { Text("No highlights or notes yet.", Modifier.padding(vertical = 12.dp)) }
-                items(annotations, key = { it.id }) { annotation ->
-                    AnnotationRow(annotation, { onOpen(annotation) }, { onEdit(book, annotation) })
+    val order = compareBy(ReaderAnnotation::chapter, ReaderAnnotation::start)
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = palette.paper, contentColor = palette.ink) {
+            Column {
+                Surface(color = palette.panel, contentColor = palette.ink) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(end = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Rounded.ArrowBack, contentDescription = "Back to book")
+                        }
+                        Text("Highlights & notes", style = MaterialTheme.typography.titleLarge)
+                    }
                 }
-                if (otherBooks.isNotEmpty()) {
+                HorizontalDivider()
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     item {
-                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                        Box {
-                            TextButton(onClick = { expanded = true }) {
-                                Text(otherBook?.title ?: "Choose another book", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                                otherBooks.forEach { candidate ->
-                                    DropdownMenuItem(
-                                        text = { Text(candidate.title) },
-                                        onClick = { onOtherBook(candidate); expanded = false },
-                                    )
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Current book", color = palette.accent, style = MaterialTheme.typography.labelLarge)
+                            Text(book.title, style = MaterialTheme.typography.headlineSmall)
+                        }
+                    }
+                    if (annotations.isEmpty()) item {
+                        Text("Select a passage in the reader to save a highlight or note.",
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    items(annotations.sortedWith(order), key = { "current:${it.id}" }) { annotation ->
+                        AnnotationCard(annotation, chapterTitles.getOrNull(annotation.chapter), palette,
+                            onOpen = { onOpen(annotation) }, onEdit = { onEdit(book, annotation) })
+                    }
+                    if (otherBooks.isNotEmpty()) {
+                        item {
+                            Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                HorizontalDivider()
+                                Text("Other books", style = MaterialTheme.typography.titleMedium)
+                                Box {
+                                    OutlinedButton(onClick = { expanded = true }) {
+                                        Text(otherBook?.title ?: "Choose a book", Modifier.weight(1f, fill = false),
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Icon(Icons.Rounded.ArrowDropDown, contentDescription = null)
+                                    }
+                                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                        otherBooks.forEach { candidate ->
+                                            DropdownMenuItem(text = { Text(candidate.title) },
+                                                onClick = { onOtherBook(candidate); expanded = false })
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                    if (otherBook != null && otherNotes.isEmpty()) item { Text("No highlights or notes in this book.") }
-                    items(otherNotes, key = { it.id }) { annotation ->
-                        AnnotationRow(annotation, null, { otherBook?.let { onEdit(it, annotation) } })
+                        if (otherBook != null) {
+                            if (otherNotes.isEmpty()) item { Text("No highlights or notes in this book.") }
+                            items(otherNotes.sortedWith(order), key = { "other:${it.id}" }) { annotation ->
+                                AnnotationCard(annotation, "Section ${annotation.chapter + 1}", palette,
+                                    onOpen = null, onEdit = { onEdit(otherBook, annotation) })
+                            }
+                        }
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-    )
+        }
+    }
 }
 
 @Composable
-private fun AnnotationRow(annotation: ReaderAnnotation, onOpen: (() -> Unit)?, onEdit: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        val body = Modifier.weight(1f)
-        Column(
-            (if (onOpen == null) body else body.clickable(onClick = onOpen))
-                .padding(vertical = 8.dp),
-        ) {
-            Text(annotation.quote, maxLines = 3, overflow = TextOverflow.Ellipsis)
+private fun AnnotationCard(
+    annotation: ReaderAnnotation,
+    chapter: String?,
+    palette: ReaderPalette,
+    onOpen: (() -> Unit)?,
+    onEdit: () -> Unit,
+) {
+    val tint = MaterialTheme.colorScheme.secondaryContainer
+    OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = palette.panel, contentColor = palette.ink)) {
+        Column(Modifier.padding(start = 14.dp, end = 8.dp, bottom = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(chapter ?: "Highlight", Modifier.weight(1f), color = palette.accent,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
+                IconButton(onClick = onEdit) { Icon(Icons.Rounded.Edit, contentDescription = "Edit highlight or note") }
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(end = 6.dp),
+                color = tint, contentColor = palette.ink, shape = MaterialTheme.shapes.small,
+            ) {
+                Text(annotation.quote, Modifier.padding(12.dp), maxLines = 6, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium)
+            }
             if (annotation.note.isNotBlank()) {
-                Text(annotation.note, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Text(annotation.note, Modifier.padding(top = 10.dp, end = 6.dp),
+                    style = MaterialTheme.typography.bodyLarge)
+            }
+            if (onOpen != null) {
+                TextButton(onClick = onOpen, modifier = Modifier.padding(top = 4.dp)) { Text("Go to passage") }
             }
         }
-        TextButton(onClick = onEdit) { Text("Edit") }
     }
 }
 
@@ -186,9 +240,14 @@ internal fun ReaderNoteEditor(
         title = { Text(if (existing) "Edit note" else "Add note") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(annotation.quote, maxLines = 4, overflow = TextOverflow.Ellipsis)
-                OutlinedTextField(note, { note = it.take(5000) }, label = { Text("Note") }, modifier = Modifier.fillMaxWidth())
-                if (existing) TextButton(onClick = onDelete) { Text("Remove highlight and note") }
+                Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.small) {
+                    Text(annotation.quote, Modifier.fillMaxWidth().padding(12.dp), maxLines = 4, overflow = TextOverflow.Ellipsis)
+                }
+                OutlinedTextField(note, { note = it.take(5000) }, label = { Text("Note") },
+                    modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 7)
+                if (existing) TextButton(onClick = onDelete) {
+                    Text("Remove highlight and note", color = MaterialTheme.colorScheme.error)
+                }
             }
         },
         confirmButton = {

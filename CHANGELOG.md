@@ -1,3 +1,10 @@
+# 0.8.0-dev
+
+- Add persistent type, size, spacing, margin, alignment and page color controls, including local font import.
+- Track page drags and retain the visible passage during layout changes where a text anchor is available.
+- Improve EPUB contents hierarchy, section links, fallback resources and UTF-16 chapter support.
+- Simplify reader bars and redesign notes and highlights across the three reading palettes.
+
 # 0.7.0-dev
 
 - Add EPUB highlights, notes, whole-book search, browser dictionary lookup, and chapter read-aloud.

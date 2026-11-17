@@ -17,15 +17,16 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Brightness4
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.List
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.TextDecrease
-import androidx.compose.material.icons.rounded.TextIncrease
+import androidx.compose.material.icons.rounded.TextFields
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,6 +34,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -52,6 +56,7 @@ import java.util.UUID
 import com.paperlight.reader.epub.EpubBook
 import com.paperlight.reader.epub.EpubBookParser
 import com.paperlight.reader.epub.EpubChapter
+import com.paperlight.reader.epub.EpubTocEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -107,12 +112,39 @@ fun EpubReaderScreen(
     var pageCount by remember(book.id) { mutableIntStateOf(1) }
     var initialChapterFraction by remember(book.id) { mutableFloatStateOf(0f) }
     var isRestoringPosition by remember(book.id) { mutableStateOf(true) }
-    var themeMode by remember { mutableIntStateOf(0) } // paper, white, dark
+    var themeMode by remember { mutableIntStateOf(preferences.getInt("palette", 0).coerceIn(0, 2)) }
     var showContents by remember { mutableStateOf(false) }
-    var showThemes by remember { mutableStateOf(false) }
-    var fontScale by remember { mutableFloatStateOf(1f) }
+    var showAppearance by remember { mutableStateOf(false) }
+    var appearance by remember {
+        mutableStateOf(ReadingAppearance(
+            preferences.getFloat("textSize", 1f), preferences.getFloat("lineHeight", 1.65f),
+            preferences.getInt("margins", 24), preferences.getString("font", "serif") ?: "serif",
+            preferences.getString("alignment", "original") ?: "original",
+        ))
+    }
+    var customFont by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    val fontPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) coroutineScope.launch {
+            val imported = withContext(Dispatchers.IO) { runCatching { importReadingFont(context, uri) }.getOrNull() }
+            if (imported == null) toolMessage = "Choose a TTF or OTF font under 6 MB."
+            else {
+                customFont = imported
+                appearance = appearance.copy(font = "custom")
+            }
+        }
+    }
+    LaunchedEffect(context) {
+        customFont = withContext(Dispatchers.IO) { runCatching { fontData(customFontFile(context)) }.getOrNull() }
+    }
+    LaunchedEffect(appearance, themeMode) {
+        preferences.edit().putInt("palette", themeMode).putFloat("textSize", appearance.size)
+            .putFloat("lineHeight", appearance.lineHeight).putInt("margins", appearance.margins)
+            .putString("font", appearance.font).putString("alignment", appearance.alignment).apply()
+    }
     var webView by remember { mutableStateOf<WebView?>(null) }
-    var loadedChapterPath by remember { mutableStateOf<String?>(null) }
+    var sentFont: String? by remember { mutableStateOf(null) }
+    var loadedChapterIndex by remember(book.id) { mutableIntStateOf(-1) }
 
     LaunchedEffect(book.id) {
         runCatching {
@@ -146,13 +178,14 @@ fun EpubReaderScreen(
     }
     val displayProgress = if (reportedChapter == chapterIndex) savedPosition else book.progress
     val chapterTitles = remember(publication) {
-        val titles = publication.tableOfContents.associate { it.chapterIndex to it.title }
+        val titles = publication.tableOfContents.groupBy { it.chapterIndex }.mapValues { (_, entries) -> entries.first().title }
         publication.chapters.mapIndexed { index, entry -> titles[index] ?: entry.title }
     }
     val chapter = publication.chapters[chapterIndex]
-    val background = when (themeMode) { 1 -> Color.White; 2 -> Color(0xFF171717); else -> Color(0xFFF4EBD8) }
-    val foreground = if (themeMode == 2) Color(0xFFE5E0D5) else Color(0xFF29251F)
-    val themeName = listOf("Paper", "White", "Dark")[themeMode]
+    val palette = readerPalettes[themeMode]
+    val background = palette.paper
+    val foreground = palette.ink
+    val toc = publication.tableOfContents
 
 
     fun saveAnnotation(target: BookEntity, item: ReaderAnnotation, delete: Boolean = false) {
@@ -207,397 +240,417 @@ fun EpubReaderScreen(
             webView?.evaluateJavascript("window.paperlightHighlights?.($ranges)", null)
         }
     }
+    LaunchedEffect(webView, reportedChapter, chapterIndex, appearance, customFont) {
+        if (reportedChapter != chapterIndex) return@LaunchedEffect
+        val view = webView ?: return@LaunchedEffect
+        val settings = appearance.json()
+        val font = customFont
+        if (appearance.font == "custom" && font != null && sentFont !== font) {
+            sentFont = font
+            view.evaluateJavascript("window.paperlightFontParts = []", null)
+            font.chunked(48000).forEach { chunk ->
+                view.evaluateJavascript("window.paperlightFontParts.push(${JSONObject.quote(chunk)})", null)
+            }
+            view.evaluateJavascript("window.paperlightSetAppearance?.($settings,window.paperlightFontParts.join('')); delete window.paperlightFontParts", null)
+        } else {
+            view.evaluateJavascript("window.paperlightSetAppearance?.($settings)", null)
+        }
+    }
+    LaunchedEffect(themeMode, webView, reportedChapter, chapterIndex) {
+        if (reportedChapter == chapterIndex) {
+            val theme = listOf("paper", "white", "dark")[themeMode]
+            webView?.evaluateJavascript("window.paperlightTheme?.('$theme')", null)
+        }
+    }
     LaunchedEffect(chapterIndex) {
         speech.stop()
         selection = null
     }
 
-    Box(Modifier.fillMaxSize().background(background)) {
-        Box(Modifier.matchParentSize().onSizeChanged { viewport = it }) {
-            AndroidView(
-                modifier = Modifier.matchParentSize(),
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        settings.javaScriptEnabled = true
-                        settings.useWideViewPort = true
-                        settings.loadWithOverviewMode = false
-                        settings.allowFileAccess = true // EPUB-relative images and stylesheets are local files.
-                        settings.allowContentAccess = false
-                        settings.allowFileAccessFromFileURLs = false
-                        settings.allowUniversalAccessFromFileURLs = false
-                        settings.domStorageEnabled = false
-                        settings.blockNetworkLoads = true
-                        isHorizontalScrollBarEnabled = false
-                        isVerticalScrollBarEnabled = false
-                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                        webChromeClient = WebChromeClient()
-                        addJavascriptInterface(object {
-                            @JavascriptInterface fun onReaderTap(sourceChapter: Int, tapCount: Int) {
-                                mainView.post {
-                                    if (sourceChapter == chapterIndex && (singleTap || tapCount == 2)) {
-                                        barsVisible = !barsVisible
-                                    }
-                                }
-                            }
-
-                            @JavascriptInterface fun onSelection(sourceChapter: Int, start: Int, end: Int, quote: String) {
-                                mainView.post {
-                                    if (sourceChapter != chapterIndex) return@post
-                                    selection = if (start >= 0 && end > start && quote.isNotBlank()) {
-                                        annotations.firstOrNull { it.chapter == sourceChapter && it.start == start && it.end == end }
-                                            ?: ReaderAnnotation(UUID.randomUUID().toString(), sourceChapter, start, end, quote, "")
-                                    } else null
-                                }
-                            }
-
-                            @JavascriptInterface fun onSearchMiss(sourceChapter: Int) {
-                                mainView.post {
-                                    if (sourceChapter == chapterIndex) toolMessage = "Could not locate this match in the displayed text."
-                                }
-                            }
-
-                            @JavascriptInterface fun onPage(current: Int, total: Int, offset: Float, sourceChapter: Int, scrolling: Boolean) {
-                                mainView.post {
-                                    if (sourceChapter != chapterIndex || scrolling != scrollMode) return@post
-                                    page = current.coerceAtLeast(0)
-                                    pageCount = total.coerceAtLeast(1)
-                                    fraction = offset.coerceIn(0f, 1f)
-                                    reportedChapter = sourceChapter
-                                }
-                            }
-                            @JavascriptInterface fun onChapterTurn(sourceChapter: Int, direction: Int) {
-                                mainView.post {
-                                    if (sourceChapter != chapterIndex || direction !in listOf(-1, 1)) return@post
-                                    val target = chapterIndex + direction
-                                    if (target !in publication.chapters.indices) return@post
-                                    chapterTurnDirection = direction
-                                    initialChapterFraction = if (direction < 0) 1f else 0f
-                                    isRestoringPosition = true
-                                    reportedChapter = -1
-                                    chapterIndex = target
-                                }
-                            }
-                        }, "Paperlight")
-                        webViewClient = object : WebViewClient() {
-                            override fun onPageFinished(view: WebView, url: String?) {
-                                val fraction = if (isRestoringPosition) initialChapterFraction else 0f
-                                val loadingChapter = chapterIndex
-                                view.evaluateJavascript(buildReaderScript(
-                                    themeMode, fontScale, fraction, scrollMode, loadingChapter,
-                                    view.width, view.height, flip,
-                                    lastChapterIndex = publication.chapters.lastIndex,
-                                    entryDirection = chapterTurnDirection,
-                                )) {
-                                    if (chapterIndex == loadingChapter) {
-                                        pendingScript?.takeIf { it.first == loadingChapter }?.let {
-                                            pendingScript = null
-                                            view.evaluateJavascript(it.second, null)
+    ReaderTheme(palette, dark = themeMode == 2) {
+        Box(Modifier.fillMaxSize().background(background)) {
+            Box(Modifier.matchParentSize().onSizeChanged { viewport = it }) {
+                AndroidView(
+                    modifier = Modifier.matchParentSize(),
+                    factory = { ctx ->
+                        WebView(ctx).apply {
+                            settings.javaScriptEnabled = true
+                            settings.useWideViewPort = true
+                            settings.loadWithOverviewMode = false
+                            settings.allowFileAccess = true // EPUB-relative images and stylesheets are local files.
+                            settings.allowContentAccess = false
+                            settings.allowFileAccessFromFileURLs = false
+                            settings.allowUniversalAccessFromFileURLs = false
+                            settings.domStorageEnabled = false
+                            settings.blockNetworkLoads = true
+                            isHorizontalScrollBarEnabled = false
+                            isVerticalScrollBarEnabled = false
+                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                            webChromeClient = WebChromeClient()
+                            addJavascriptInterface(object {
+                                @JavascriptInterface fun onReaderTap(sourceChapter: Int, tapCount: Int) {
+                                    mainView.post {
+                                        if (sourceChapter == chapterIndex && (singleTap || tapCount == 2)) {
+                                            barsVisible = !barsVisible
                                         }
-                                        isRestoringPosition = false
-                                        initialChapterFraction = 0f
-                                        chapterTurnDirection = 0
                                     }
                                 }
-                            }
-                            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
-                                if (url.startsWith("file:", ignoreCase = true)) {
-                                    val targetPath = runCatching { Uri.parse(url).path?.let { File(it).canonicalPath } }.getOrNull()
-                                    val targetChapter = publication.chapters.indexOfFirst { it.file.canonicalPath == targetPath }
-                                    if (targetChapter >= 0 && targetChapter != chapterIndex) {
-                                        chapterTurnDirection = 0
+
+                                @JavascriptInterface fun onSelection(sourceChapter: Int, start: Int, end: Int, quote: String) {
+                                    mainView.post {
+                                        if (sourceChapter != chapterIndex) return@post
+                                        selection = if (start >= 0 && end > start && quote.isNotBlank()) {
+                                            annotations.firstOrNull { it.chapter == sourceChapter && it.start == start && it.end == end }
+                                                ?: ReaderAnnotation(UUID.randomUUID().toString(), sourceChapter, start, end, quote, "")
+                                        } else null
+                                    }
+                                }
+
+                                @JavascriptInterface fun onSearchMiss(sourceChapter: Int) {
+                                    mainView.post {
+                                        if (sourceChapter == chapterIndex) toolMessage = "Could not locate this match in the displayed text."
+                                    }
+                                }
+
+                                @JavascriptInterface fun onPage(current: Int, total: Int, offset: Float, sourceChapter: Int, scrolling: Boolean) {
+                                    mainView.post {
+                                        if (sourceChapter != chapterIndex || scrolling != scrollMode) return@post
+                                        page = current.coerceAtLeast(0)
+                                        pageCount = total.coerceAtLeast(1)
+                                        fraction = offset.coerceIn(0f, 1f)
+                                        reportedChapter = sourceChapter
+                                    }
+                                }
+                                @JavascriptInterface fun onChapterTurn(sourceChapter: Int, direction: Int) {
+                                    mainView.post {
+                                        if (sourceChapter != chapterIndex || direction !in listOf(-1, 1)) return@post
+                                        val target = chapterIndex + direction
+                                        if (target !in publication.chapters.indices) return@post
+                                        chapterTurnDirection = direction
+                                        initialChapterFraction = if (direction < 0) 1f else 0f
+                                        isRestoringPosition = true
                                         reportedChapter = -1
-                                        chapterIndex = targetChapter
-                                        page = 0
-                                        pageCount = 1
-                                        initialChapterFraction = 0f
-                                        isRestoringPosition = false
+                                        chapterIndex = target
+                                    }
+                                }
+                            }, "Paperlight")
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageFinished(view: WebView, url: String?) {
+                                    val fraction = if (isRestoringPosition) initialChapterFraction else 0f
+                                    sentFont = null
+                                    val loadingChapter = chapterIndex
+                                    view.evaluateJavascript(buildReaderScript(
+                                        themeMode, appearance.size, fraction, scrollMode, loadingChapter,
+                                        view.width, view.height, flip,
+                                        lastChapterIndex = publication.chapters.lastIndex,
+                                        entryDirection = chapterTurnDirection,
+                                    )) {
+                                        if (chapterIndex == loadingChapter) {
+                                            pendingScript?.takeIf { it.first == loadingChapter }?.let {
+                                                pendingScript = null
+                                                view.evaluateJavascript(it.second, null)
+                                            }
+                                            isRestoringPosition = false
+                                            initialChapterFraction = 0f
+                                            chapterTurnDirection = 0
+                                        }
+                                    }
+                                }
+                                override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+                                    if (url.startsWith("file:", ignoreCase = true)) {
+                                        val uri = Uri.parse(url)
+                                        val targetPath = runCatching { uri.path?.let { File(it).canonicalPath } }.getOrNull()
+                                        val targetChapter = publication.chapters.indexOfFirst { it.file.canonicalPath == targetPath }
+                                        if (targetChapter >= 0) {
+                                            val script = uri.fragment?.let { "window.paperlightAnchor?.(${JSONObject.quote(it)})" }
+                                                ?: "window.paperlightRestore?.(0)"
+                                            openLocation(targetChapter, script)
+                                        }
                                         return true
                                     }
-                                    return targetPath != publication.chapters[chapterIndex].file.canonicalPath
+                                    return true
                                 }
-                                return true
+                            }
+                            webView = this
+                        }
+                    },
+                    onRelease = { view ->
+                        view.removeJavascriptInterface("Paperlight")
+                        view.destroy()
+                    },
+                    update = { view ->
+                        webView = view
+                        if (viewport.width > 0 && viewport.height > 0 && loadedChapterIndex != chapterIndex) {
+                            val requestedChapter = chapterIndex
+                            loadedChapterIndex = requestedChapter
+                            view.post {
+                                if (view.width > 0 && view.height > 0 && loadedChapterIndex == requestedChapter && chapterIndex == requestedChapter) {
+                                    loadChapter(view, chapter)
+                                }
                             }
                         }
-                        webView = this
+                    }
+                )
+
+            }
+            if (barsVisible) {
+                Surface(Modifier.align(Alignment.TopCenter).fillMaxWidth(), color = palette.panel,
+                    contentColor = foreground, shadowElevation = 2.dp) {
+                    Row(Modifier.heightIn(min = 52.dp).padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, contentDescription = "Back") }
+                        Text(publication.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Box {
+                            IconButton(onClick = { toolMenu = true }) {
+                                Icon(Icons.Rounded.MoreVert, contentDescription = "Reader settings")
+                            }
+                            DropdownMenu(expanded = toolMenu, onDismissRequest = { toolMenu = false }) {
+                                DropdownMenuItem(text = { Text("Reader settings") },
+                                    onClick = { toolMenu = false; settingsOpen = true })
+                                DropdownMenuItem(text = { Text("Appearance") },
+                                    onClick = { toolMenu = false; showAppearance = true })
+                            }
+                        }
+                    }
+                }
+                Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), color = palette.panel,
+                    contentColor = foreground, shadowElevation = 4.dp) {
+                    Column(Modifier.padding(horizontal = 8.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { viewNext(webView, -1) }) {
+                                Icon(Icons.Rounded.ChevronLeft, contentDescription = "Previous")
+                            }
+                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(chapterTitles[chapterIndex], style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                val position = if (!scrollMode && reportedChapter == chapterIndex)
+                                    "${page + 1} / $pageCount  ·  " else ""
+                                Text("$position${(displayProgress * 100).toInt()}%", style = MaterialTheme.typography.labelSmall)
+                            }
+                            IconButton(onClick = { viewNext(webView, 1) }) {
+                                Icon(Icons.Rounded.ChevronRight, contentDescription = "Next")
+                            }
+                        }
+                        LinearProgressIndicator(progress = { displayProgress }, modifier = Modifier.fillMaxWidth().height(2.dp),
+                            color = palette.accent, trackColor = palette.accent.copy(alpha = .2f))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            ReaderBottomAction(Icons.Rounded.List, "Contents") { showContents = true }
+                            ReaderBottomAction(Icons.Rounded.TextFields, "Type") { showAppearance = true }
+                            ReaderBottomAction(Icons.Rounded.Search, "Search") { showSearch = true }
+                            ReaderBottomAction(Icons.Rounded.Edit, "Notes") { showNotes = true }
+                            ReaderBottomAction(Icons.Rounded.PlayArrow, if (speech.speaking) "Stop" else "Listen",
+                                enabled = reportedChapter == chapterIndex) { readChapter() }
+                        }
+                    }
+                }
+            }
+            selection?.takeIf { it.chapter == chapterIndex }?.let { selected ->
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                        .padding(bottom = if (barsVisible) 116.dp else 12.dp),
+                    tonalElevation = 5.dp,
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Row {
+                        TextButton(onClick = {
+                            saveAnnotation(book, selected)
+                            selection = null
+                            webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
+                        }) { Text("Highlight") }
+                        TextButton(onClick = {
+                            editingNote = book to selected
+                            selection = null
+                            webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
+                        }) { Text("Note") }
+                        TextButton(onClick = {
+                            dictionaryTerm = selected.quote.take(100)
+                            selection = null
+                            webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
+                        }) { Text("Dictionary") }
+                    }
+                }
+            }
+        }
+        if (showContents) {
+            ChapterList(
+                titles = chapterTitles,
+                toc = toc,
+                currentChapter = chapterIndex,
+                background = palette.panel,
+                foreground = foreground,
+                bookmarks = bookmarks.filter { it.chapter in chapterTitles.indices },
+                canBookmark = reportedChapter == chapterIndex &&
+                    ReaderBookmark(chapterIndex, fraction) !in bookmarks,
+                onBookmark = {
+                    bookmarks = (bookmarks + ReaderBookmark(chapterIndex, fraction)).distinct()
+                    bookmarkStore.write(book.id, bookmarks)
+                },
+                onRemoveBookmark = {
+                    bookmarks = bookmarks - it
+                    bookmarkStore.write(book.id, bookmarks)
+                },
+                onOpenBookmark = { bookmark ->
+                    showContents = false
+                    if (bookmark.chapter == chapterIndex && reportedChapter == chapterIndex) {
+                        webView?.evaluateJavascript("window.paperlightRestore?.(${bookmark.fraction})", null)
+                    } else if (bookmark.chapter != chapterIndex) {
+                        chapterTurnDirection = 0
+                        reportedChapter = -1
+                        initialChapterFraction = bookmark.fraction
+                        isRestoringPosition = true
+                        chapterIndex = bookmark.chapter
                     }
                 },
-                onRelease = { view ->
-                    view.removeJavascriptInterface("Paperlight")
-                    view.destroy()
-                },
-                update = { view ->
-                    webView = view
-                    if (viewport.width > 0 && viewport.height > 0 && loadedChapterPath != chapter.file.absolutePath) {
-                        loadedChapterPath = chapter.file.absolutePath
-                        view.post {
-                            if (view.width > 0 && view.height > 0 && loadedChapterPath == chapter.file.absolutePath) {
-                                loadChapter(view, chapter)
-                            }
-                        }
+                onDismiss = { showContents = false },
+                onSelect = { entry ->
+                    showContents = false
+                    val fragment = entry.fragment
+                    if (fragment != null) {
+                        openLocation(entry.chapterIndex, "window.paperlightAnchor?.(${JSONObject.quote(fragment)})")
+                    } else if (entry.chapterIndex != chapterIndex) {
+                        openLocation(entry.chapterIndex, "window.paperlightRestore?.(0)")
                     }
                 }
             )
-
         }
-        if (barsVisible) {
-            Column(Modifier.align(Alignment.TopCenter).background(background)) {
-                Row(
-                    Modifier.fillMaxWidth().background(background).padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, contentDescription = "Back", tint = foreground) }
-                    Column(Modifier.weight(1f)) {
-                        Text(publication.title, color = foreground, style = MaterialTheme.typography.titleSmall, maxLines = 1)
-                        Text(chapterTitles[chapterIndex], color = foreground.copy(alpha = .7f), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        if (showSearch) {
+            ReaderSearchDialog(publication.chapters, chapterTitles, onOpen = { hit ->
+                showSearch = false
+                barsVisible = false
+                openLocation(hit.chapter, "window.paperlightFind?.(${JSONObject.quote(hit.query)},${hit.occurrence})")
+            }, onDismiss = { showSearch = false })
+        }
+        if (showNotes && editingNote == null) {
+            ReaderNotesDialog(
+                book = book,
+                chapterTitles = chapterTitles,
+                palette = palette,
+                otherBooks = libraryBooks.filter { it.id != book.id && it.format == "EPUB" },
+                annotations = annotations.filter { it.chapter in chapterTitles.indices },
+                otherBook = otherNotesBook,
+                onOtherBook = { otherNotesBook = it },
+                readOther = { id -> annotationStore.read(id) },
+                onOpen = { item ->
+                    showNotes = false
+                    barsVisible = false
+                    openLocation(item.chapter, "window.paperlightShowRange?.(${item.start},${item.end})")
+                },
+                onEdit = { target, item -> editingNote = target to item },
+                onDismiss = { showNotes = false },
+            )
+        }
+        editingNote?.let { (target, item) ->
+            val existing = if (target.id == book.id) annotations else annotationStore.read(target.id)
+            ReaderNoteEditor(
+                annotation = item,
+                existing = existing.any { it.id == item.id },
+                onSave = { note -> saveAnnotation(target, item.copy(note = note)); editingNote = null },
+                onDelete = { saveAnnotation(target, item, delete = true); editingNote = null },
+                onDismiss = { editingNote = null },
+            )
+        }
+        dictionaryTerm?.let { term ->
+            AlertDialog(
+                onDismissRequest = { dictionaryTerm = null },
+                title = { Text("Dictionary lookup") },
+                text = {
+                    OutlinedTextField(term, { dictionaryTerm = it.take(100) }, label = { Text("Word or phrase") }, singleLine = true)
+                },
+                confirmButton = {
+                    TextButton(onClick = { dictionaryTerm = null; lookup(term) }, enabled = term.isNotBlank()) {
+                        Text("Open Wiktionary")
                     }
-                    IconButton(onClick = { showContents = true }) {
-                        Icon(Icons.Rounded.List, contentDescription = "Table of contents", tint = foreground)
-                    }
-                    Box {
-                        IconButton(onClick = { showThemes = true }) {
-                            Icon(Icons.Rounded.Brightness4, contentDescription = "Reading theme: $themeName", tint = foreground)
+                },
+                dismissButton = { TextButton(onClick = { dictionaryTerm = null }) { Text("Cancel") } },
+            )
+        }
+        if (showAppearance) {
+            ReadingAppearanceDialog(
+                value = appearance, theme = themeMode, palette = palette, hasFont = customFont != null,
+                onChange = { appearance = it }, onTheme = { themeMode = it },
+                onImport = { fontPicker.launch(arrayOf("*/*")) },
+                onDismiss = { showAppearance = false },
+            )
+        }
+        if (settingsOpen) {
+            AlertDialog(
+                onDismissRequest = { settingsOpen = false },
+                title = { Text("Reader settings") },
+                text = {
+                    Column {
+                        Text("Show or hide reading controls", style = MaterialTheme.typography.labelLarge)
+                        listOf(false to "Double tap", true to "Single tap").forEach { (single, label) ->
+                            val choose = {
+                                singleTap = single
+                                preferences.edit().putBoolean("singleTapBars", single).apply()
+                            }
+                            Row(Modifier.fillMaxWidth().clickable(onClick = choose), verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(selected = singleTap == single, onClick = choose)
+                                Text(label)
+                            }
                         }
-                        DropdownMenu(expanded = showThemes, onDismissRequest = { showThemes = false }) {
-                            listOf("Paper", "White", "Dark").forEachIndexed { index, label ->
-                                DropdownMenuItem(
-                                    text = { Text(if (themeMode == index) "✓ $label" else label) },
-                                    onClick = {
-                                        themeMode = index
-                                        webView?.evaluateJavascript("window.paperlightTheme('${label.lowercase()}')", null)
-                                        showThemes = false
+                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                        Text("Reading mode", style = MaterialTheme.typography.labelLarge)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(false to "Pages", true to "Scroll").forEach { (scroll, label) ->
+                                FilterChip(selected = scrollMode == scroll, onClick = {
+                                    if (scrollMode != scroll) {
+                                        scrollMode = scroll
+                                        preferences.edit().putBoolean("scrollMode", scroll).apply()
+                                        webView?.evaluateJavascript("window.paperlightSetScroll?.($scroll)", null)
                                     }
-                                )
+                                }, label = { Text(label) })
+                            }
+                        }
+                        if (!scrollMode) {
+                            Text("Page transition", style = MaterialTheme.typography.labelLarge)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(true to "Page flip", false to "Slide").forEach { (useFlip, label) ->
+                                    FilterChip(selected = flip == useFlip, onClick = {
+                                        flip = useFlip
+                                        preferences.edit().putBoolean("pageFlip", flip).apply()
+                                        webView?.evaluateJavascript("window.paperlightSetFlip?.($flip)", null)
+                                    }, label = { Text(label) })
+                                }
                             }
                         }
                     }
-                    IconButton(onClick = { fontScale = (fontScale - .1f).coerceAtLeast(.7f); webView?.evaluateJavascript("window.paperlightFont($fontScale)", null) }) {
-                        Icon(Icons.Rounded.TextDecrease, contentDescription = "Decrease text size", tint = foreground)
-                    }
-                    IconButton(onClick = { fontScale = (fontScale + .1f).coerceAtMost(1.8f); webView?.evaluateJavascript("window.paperlightFont($fontScale)", null) }) {
-                        Icon(Icons.Rounded.TextIncrease, contentDescription = "Increase text size", tint = foreground)
-                    }
-                    Box {
-                        IconButton(onClick = { toolMenu = true }) {
-                            Icon(Icons.Rounded.MoreVert, contentDescription = "Reading tools", tint = foreground)
-                        }
-                        DropdownMenu(expanded = toolMenu, onDismissRequest = { toolMenu = false }) {
-                            DropdownMenuItem(text = { Text("Search this book") }, onClick = { toolMenu = false; showSearch = true })
-                            DropdownMenuItem(text = { Text("Highlights & notes") }, onClick = { toolMenu = false; showNotes = true })
-                            DropdownMenuItem(
-                                text = { Text(if (speech.speaking) "Stop reading aloud" else "Read chapter aloud") },
-                                enabled = reportedChapter == chapterIndex,
-                                onClick = { toolMenu = false; readChapter() },
-                            )
-                            DropdownMenuItem(text = { Text("Reader settings") }, onClick = { toolMenu = false; settingsOpen = true })
-                        }
-                    }
-                }
-
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
-                ) {
-                    listOf(false to "Pages", true to "Scroll").forEach { (scroll, label) ->
-                        FilterChip(
-                            selected = scrollMode == scroll,
-                            onClick = {
-                                if (scrollMode != scroll) {
-                                    scrollMode = scroll
-                                    preferences.edit().putBoolean("scrollMode", scroll).apply()
-                                    webView?.evaluateJavascript("window.paperlightSetScroll?.($scroll)", null)
-                                }
-                            },
-                            label = { Text(label) }
-                        )
-                    }
-                }
-
-                if (!scrollMode) Box(Modifier.fillMaxWidth().height(40.dp), contentAlignment = Alignment.Center) {
-                    TextButton(
-                        onClick = {
-                            flip = !flip
-                            preferences.edit().putBoolean("pageFlip", flip).apply()
-                            webView?.evaluateJavascript("window.paperlightSetFlip?.($flip)", null)
-                        }
-                    ) { Text(if (flip) "Transition: Page flip" else "Transition: Simple slide", color = foreground) }
-                }
-            }
-            Row(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(background).padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = { viewNext(webView, -1) }) {
-                    Icon(Icons.Rounded.ChevronLeft, contentDescription = "Previous", tint = foreground)
-                }
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (!scrollMode && reportedChapter == chapterIndex) {
-                        Text("Chapter page ${page + 1} / $pageCount", color = foreground,
-                            style = MaterialTheme.typography.labelMedium)
-                    }
-                    Text("${(displayProgress * 100).toInt()}% of book", color = foreground,
-                        style = MaterialTheme.typography.labelSmall)
-                    LinearProgressIndicator(
-                        progress = { displayProgress },
-                        modifier = Modifier.fillMaxWidth(.82f).padding(top = 4.dp)
-                    )
-                }
-                IconButton(onClick = { viewNext(webView, 1) }) {
-                    Icon(Icons.Rounded.ChevronRight, contentDescription = "Next", tint = foreground)
-                }
-            }
+                },
+                confirmButton = { TextButton(onClick = { settingsOpen = false }) { Text("Done") } },
+            )
         }
-        selection?.takeIf { it.chapter == chapterIndex }?.let { selected ->
-            Surface(
-                modifier = Modifier.align(Alignment.BottomCenter)
-                    .padding(bottom = if (barsVisible) 76.dp else 12.dp),
-                tonalElevation = 5.dp,
-                shape = MaterialTheme.shapes.medium,
-            ) {
-                Row {
-                    TextButton(onClick = {
-                        saveAnnotation(book, selected)
-                        selection = null
-                        webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
-                    }) { Text("Highlight") }
-                    TextButton(onClick = {
-                        editingNote = book to selected
-                        selection = null
-                        webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
-                    }) { Text("Note") }
-                    TextButton(onClick = {
-                        dictionaryTerm = selected.quote.take(100)
-                        selection = null
-                        webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
-                    }) { Text("Dictionary") }
-                }
-            }
+        val message = toolMessage ?: speech.error
+        if (message != null) {
+            val dismiss = { toolMessage = null; speech.clearError() }
+            AlertDialog(onDismissRequest = dismiss, title = { Text("Reading tools") },
+                text = { Text(message) }, confirmButton = { TextButton(onClick = dismiss) { Text("OK") } })
+        }
+
+    }
+}
+
+@Composable
+private fun RowScope.ReaderBottomAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    TextButton(onClick = onClick, modifier = Modifier.weight(1f).heightIn(min = 48.dp), enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
+        colors = ButtonDefaults.textButtonColors(contentColor = LocalContentColor.current)) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
-    if (showContents) {
-        ChapterList(
-            titles = chapterTitles,
-            currentChapter = chapterIndex,
-            background = background,
-            foreground = foreground,
-            bookmarks = bookmarks.filter { it.chapter in chapterTitles.indices },
-            canBookmark = reportedChapter == chapterIndex &&
-                ReaderBookmark(chapterIndex, fraction) !in bookmarks,
-            onBookmark = {
-                bookmarks = (bookmarks + ReaderBookmark(chapterIndex, fraction)).distinct()
-                bookmarkStore.write(book.id, bookmarks)
-            },
-            onRemoveBookmark = {
-                bookmarks = bookmarks - it
-                bookmarkStore.write(book.id, bookmarks)
-            },
-            onOpenBookmark = { bookmark ->
-                showContents = false
-                if (bookmark.chapter == chapterIndex && reportedChapter == chapterIndex) {
-                    webView?.evaluateJavascript("window.paperlightRestore?.(${bookmark.fraction})", null)
-                } else if (bookmark.chapter != chapterIndex) {
-                    chapterTurnDirection = 0
-                    reportedChapter = -1
-                    initialChapterFraction = bookmark.fraction
-                    isRestoringPosition = true
-                    chapterIndex = bookmark.chapter
-                }
-            },
-            onDismiss = { showContents = false },
-            onSelect = { target ->
-                showContents = false
-                if (target != chapterIndex) {
-                    chapterTurnDirection = 0
-                    reportedChapter = -1
-                    initialChapterFraction = 0f
-                    isRestoringPosition = true
-                    chapterIndex = target
-                }
-            }
-        )
-    }
-    if (showSearch) {
-        ReaderSearchDialog(publication.chapters, chapterTitles, onOpen = { hit ->
-            showSearch = false
-            barsVisible = false
-            openLocation(hit.chapter, "window.paperlightFind?.(${JSONObject.quote(hit.query)},${hit.occurrence})")
-        }, onDismiss = { showSearch = false })
-    }
-    if (showNotes && editingNote == null) {
-        ReaderNotesDialog(
-            book = book,
-            otherBooks = libraryBooks.filter { it.id != book.id && it.format == "EPUB" },
-            annotations = annotations.filter { it.chapter in chapterTitles.indices },
-            otherBook = otherNotesBook,
-            onOtherBook = { otherNotesBook = it },
-            readOther = { id -> annotationStore.read(id) },
-            onOpen = { item ->
-                showNotes = false
-                barsVisible = false
-                openLocation(item.chapter, "window.paperlightShowRange?.(${item.start},${item.end})")
-            },
-            onEdit = { target, item -> editingNote = target to item },
-            onDismiss = { showNotes = false },
-        )
-    }
-    editingNote?.let { (target, item) ->
-        val existing = if (target.id == book.id) annotations else annotationStore.read(target.id)
-        ReaderNoteEditor(
-            annotation = item,
-            existing = existing.any { it.id == item.id },
-            onSave = { note -> saveAnnotation(target, item.copy(note = note)); editingNote = null },
-            onDelete = { saveAnnotation(target, item, delete = true); editingNote = null },
-            onDismiss = { editingNote = null },
-        )
-    }
-    dictionaryTerm?.let { term ->
-        AlertDialog(
-            onDismissRequest = { dictionaryTerm = null },
-            title = { Text("Dictionary lookup") },
-            text = {
-                OutlinedTextField(term, { dictionaryTerm = it.take(100) }, label = { Text("Word or phrase") }, singleLine = true)
-            },
-            confirmButton = {
-                TextButton(onClick = { dictionaryTerm = null; lookup(term) }, enabled = term.isNotBlank()) {
-                    Text("Open Wiktionary")
-                }
-            },
-            dismissButton = { TextButton(onClick = { dictionaryTerm = null }) { Text("Cancel") } },
-        )
-    }
-    if (settingsOpen) {
-        AlertDialog(
-            onDismissRequest = { settingsOpen = false },
-            title = { Text("Reader settings") },
-            text = {
-                Column {
-                    Text("Show or hide reading controls")
-                    listOf(false to "Double tap", true to "Single tap").forEach { (single, label) ->
-                        val choose = {
-                            singleTap = single
-                            preferences.edit().putBoolean("singleTapBars", single).apply()
-                        }
-                        Row(Modifier.fillMaxWidth().clickable(onClick = choose), verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = singleTap == single, onClick = choose)
-                            Text(label)
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { settingsOpen = false }) { Text("Done") } },
-        )
-    }
-    val message = toolMessage ?: speech.error
-    if (message != null) {
-        val dismiss = { toolMessage = null; speech.clearError() }
-        AlertDialog(onDismissRequest = dismiss, title = { Text("Reading tools") },
-            text = { Text(message) }, confirmButton = { TextButton(onClick = dismiss) { Text("OK") } })
-    }
-
 }
 
 @Composable
 private fun ChapterList(
     titles: List<String>,
+    toc: List<EpubTocEntry>,
     currentChapter: Int,
     background: Color,
     foreground: Color,
@@ -607,10 +660,11 @@ private fun ChapterList(
     onRemoveBookmark: (ReaderBookmark) -> Unit,
     onOpenBookmark: (ReaderBookmark) -> Unit,
     onDismiss: () -> Unit,
-    onSelect: (Int) -> Unit,
+    onSelect: (EpubTocEntry) -> Unit,
 ) {
     var showBookmarks by remember { mutableStateOf(false) }
-    val nearbyChapter = (currentChapter - 3).coerceAtLeast(0)
+    val activeEntry = toc.indexOfFirst { it.chapterIndex == currentChapter }
+    val nearbyChapter = (activeEntry - 3).coerceAtLeast(0)
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = nearbyChapter)
     val scope = rememberCoroutineScope()
     val divider = foreground.copy(alpha = .16f)
@@ -674,19 +728,19 @@ private fun ChapterList(
                         }
                     } else {
                         LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
-                            itemsIndexed(titles, key = { index, _ -> index }) { index, title ->
-                                val current = index == currentChapter
+                            itemsIndexed(toc, key = { index, _ -> index }) { index, entry ->
+                                val current = index == activeEntry
                                 Row(
                                     modifier = Modifier.fillMaxWidth()
                                         .background(if (current) foreground.copy(alpha = .08f) else background)
                                         .semantics { selected = current }
-                                        .clickable(role = Role.Button) { onSelect(index) }
+                                        .clickable(role = Role.Button) { onSelect(entry) }
                                         .heightIn(min = 48.dp)
-                                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                                        .padding(start = (20 + 14 * entry.depth.coerceIn(0, 5)).dp, end = 20.dp, top = 10.dp, bottom = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
-                                    Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                                    Text(entry.title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                                     if (current) {
                                         Icon(Icons.Rounded.Check, contentDescription = "Current chapter", modifier = Modifier.size(18.dp))
                                     }
@@ -722,14 +776,23 @@ private fun ChapterList(
 }
 
 private fun loadChapter(webView: WebView, chapter: EpubChapter, html: String = chapterHtml(chapter)) {
-    val base = chapter.file.parentFile?.let { Uri.fromFile(it).toString().trimEnd('/') + "/" } ?: "file:///"
+    val base = Uri.fromFile(chapter.file).toString()
     webView.loadDataWithBaseURL(base, html, "text/html", "UTF-8", null)
 }
 
 internal fun chapterHtml(chapter: EpubChapter): String {
     // Publication scripting is not supported in this milestone. Strip scripts and inline
     // event handlers before loading so an imported book cannot execute arbitrary JS.
-    val html = chapter.file.readText(Charsets.UTF_8)
+    val bytes = chapter.file.readBytes()
+    fun byte(index: Int) = bytes.getOrNull(index)?.toInt()?.and(0xff)
+    val charset = when {
+        byte(0) == 0xfe && byte(1) == 0xff -> Charsets.UTF_16BE
+        byte(0) == 0xff && byte(1) == 0xfe -> Charsets.UTF_16LE
+        byte(0) == 0 && byte(1) == 0x3c -> Charsets.UTF_16BE
+        byte(0) == 0x3c && byte(1) == 0 -> Charsets.UTF_16LE
+        else -> Charsets.UTF_8
+    }
+    val html = String(bytes, charset)
         .trimStart('﻿', ' ', '\t', '\r', '\n')
         .replaceFirst(Regex("""^<\?xml[^>]*>\s*""", RegexOption.IGNORE_CASE), "")
         .replaceFirst(Regex("""^<!doctype[^>]*>\s*""", RegexOption.IGNORE_CASE), "")
@@ -751,7 +814,7 @@ private fun viewNext(view: WebView?, direction: Int) {
 
 private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean, lastChapterIndex: Int, entryDirection: Int): String = """
 (function(){
- const palettes={paper:{bg:'#F4EBD8',fg:'#29251F',link:'#405D85'},white:{bg:'#FFFFFF',fg:'#222222',link:'#315D91'},dark:{bg:'#171717',fg:'#E5E0D5',link:'#B7C9E8'}};
+ const palettes={paper:{bg:'#F4EBD8',fg:'#342D24',link:'#405D85'},white:{bg:'#F9F9F5',fg:'#2C302E',link:'#395F55'},dark:{bg:'#1D201F',fg:'#E1DFD5',link:'#B4CA9A'}};
  let mode=${when (themeMode) { 1 -> "'white'"; 2 -> "'dark'"; else -> "'paper'" }};
  if(document.getElementById('paperlight-style')) return null;
  const style=document.createElement('style'); style.id='paperlight-style';
@@ -762,7 +825,20 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  mark[data-paperlight-note]{background:#ffd664!important;color:#28231a!important;}
  p,li{orphans:2;widows:2;} img,svg,video{max-width:100%!important;max-height:90%!important;object-fit:contain!important;break-inside:avoid!important;} h1,h2,h3,h4{break-after:avoid!important;} a{color:${'$'}{palettes[mode].link}!important;}`;
  document.head.appendChild(style);
+ const darkText=document.createElement('style');
+ document.head.appendChild(darkText);
+ function applyDarkText(){
+   darkText.textContent=mode==='dark'
+     ? "#paperlight-content :is(p,li,blockquote,h1,h2,h3,h4,h5,h6,dt,dd,td,th,figcaption){color:inherit!important;background-color:transparent!important;} #paperlight-content :is(span,em,strong):not(a *){color:inherit!important;}"
+     : "";
+ }
+ applyDarkText();
  let scrolling=$scrollMode;
+ let type={size:$fontScale,lineHeight:1.65,margins:24,font:'serif',alignment:'original'};
+ let customFontReady=false;
+ let dragAngle=0;
+ const fontStyle=document.createElement('style');
+ document.head.appendChild(fontStyle);
  // Navigation owns the page index; animated scroll geometry must never own it.
  let currentPage=0;
  let pageTotal=1;
@@ -772,6 +848,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  let activeAnimation=null;
  let motionGeneration=0;
  function cancelMotion(){
+   resetDrag();
    motionGeneration++;
    if(activeAnimation) activeAnimation.cancel();
    activeAnimation=null;
@@ -797,9 +874,11 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    const width=window.innerWidth||Math.round($widthPx/ratio);
    const height=window.innerHeight>48?window.innerHeight:Math.round($heightPx/ratio);
    layoutWidth=width; layoutHeight=height;
-   const margin=Math.min(24,Math.floor(Math.min(width,height)/4));
+   const margin=Math.min(type.margins,Math.floor(Math.min(width,height)/4));
    const contentWidth=Math.max(1,width-2*margin);
    const contentHeight=Math.max(1,height-2*margin);
+   const family=type.font==='custom'?(customFontReady?'PaperlightCustom, serif':'serif'):type.font;
+   const alignment=type.alignment==='original'?'':`text-align:${'$'}{type.alignment}!important;`;
    layout.textContent=`
      html > body{margin:0!important;padding:0!important;display:block!important;}
      #paperlight-viewport{
@@ -807,7 +886,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
        width:${'$'}{width}px!important;height:${'$'}{height}px!important;
        overflow-x:hidden!important;overflow-y:${'$'}{scrolling?'auto':'hidden'}!important;
        scrollbar-width:none;overscroll-behavior:none;
-       overflow-anchor:none!important;scroll-behavior:auto!important;touch-action:manipulation;
+       overflow-anchor:none!important;scroll-behavior:auto!important;touch-action:${'$'}{scrolling?'manipulation':'pan-y pinch-zoom'};
        background:${'$'}{palettes[mode].bg};
      }
      #paperlight-content{
@@ -818,7 +897,13 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
        columns:${'$'}{scrolling?'auto':contentWidth+'px 1'}!important;
        column-gap:${'$'}{2*margin}px!important;
        column-fill:auto!important;overflow-wrap:anywhere!important;
+       font-family:${'$'}{family}!important;line-height:${'$'}{type.lineHeight}!important;
      }
+     #paperlight-content :is(p,li,dd,blockquote){
+       font-family:${'$'}{family}!important;line-height:${'$'}{type.lineHeight}!important;${'$'}{alignment}
+     }
+     #paperlight-content pre{white-space:pre-wrap!important;}
+     #paperlight-content table{max-width:100%!important;overflow-wrap:anywhere!important;}
      #paperlight-content img,#paperlight-content svg,#paperlight-content video{
        max-height:${'$'}{contentHeight}px!important;
      }
@@ -864,11 +949,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    restore(progress);
  };
  window.paperlightSetScroll=function(next){
-   const progress=fraction();
-   cancelMotion();
-   scrolling=next;
-   configureMode();
-   restore(progress);
+   reflow(()=>{scrolling=next;});
  };
  configureMode();
  let flip=$flip;
@@ -885,9 +966,11 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  }
  function animateExit(direction,chapterBoundary){
    const origin=direction>0?'left center':'right center';
+   const start=dragAngle;
+   resetDrag();
    return animate(flip?[
-     {transform:'none',transformOrigin:origin,filter:'brightness(1)'},
-     {transform:'perspective(950px) rotateY('+direction*18+'deg)',transformOrigin:origin,filter:'brightness(.82)'}
+     {transform:start?'perspective(950px) rotateY('+start+'deg)':'none',transformOrigin:origin,filter:'brightness(1)'},
+     {transform:'perspective(950px) rotateY('+direction*40+'deg)',transformOrigin:origin,filter:'brightness(.82)'}
    ]:[
      {transform:'none',opacity:1},
      {transform:'translateX('+(-direction*16)+'px)',opacity:.55}
@@ -913,7 +996,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      : (nextPage<0||nextPage>=total());
    if(atEdge){
      const chapter=$chapterIndex+direction;
-     if(chapter<0||chapter>$lastChapterIndex) return;
+     if(chapter<0||chapter>$lastChapterIndex){resetDrag();return;}
      if(!scrolling&&!reducedMotion()){
        turning=true;
        const generation=++motionGeneration;
@@ -985,13 +1068,13 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    range.setEnd(last.node,end-last.start);
    return range;
  }
- function reveal(range){
+ function reveal(range, inset=.2){
    cancelMotion();
    const rect=Array.from(range.getClientRects()).find(rect=>rect.width>0&&rect.height>0);
    if(!rect) return;
    const frame=viewport.getBoundingClientRect();
    if(scrolling){
-     moveTo(position()+rect.top-frame.top-viewport.clientHeight*.2,'instant');
+     moveTo(position()+rect.top-frame.top-viewport.clientHeight*inset,'instant');
    }else{
      const x=position()+rect.left-frame.left;
      currentPage=Math.max(0,Math.min(total()-1,Math.floor(x/pageStride)));
@@ -1102,17 +1185,56 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  };
  let searchMarkerTimer;
  window.paperlightChapterText=()=>content.innerText.trim().slice(0,250000);
+ window.paperlightAnchor=function(id){
+   const target=document.getElementById(id)||document.getElementsByName(id)[0];
+   if(target&&content.contains(target)) reveal(target);
+ };
+ document.addEventListener('click',event=>{
+   const href=event.target?.closest?.('a[href]')?.getAttribute('href');
+   if(!href?.startsWith('#')) return;
+   event.preventDefault();
+   let id=href.slice(1);
+   try {id=decodeURIComponent(id);} catch(_){}
+   if(id) window.paperlightAnchor(id);
+   else window.paperlightRestore(0);
+ });
+ function resetDrag(){
+   if(!dragAngle) return;
+   dragAngle=0;
+   viewport.style.removeProperty('transform');
+   viewport.style.removeProperty('transform-origin');
+ }
  let touchStart;
  let previousTap;
  window.addEventListener('touchstart',event=>{
    const touch=event.touches.length===1?event.touches[0]:null;
    touchStart=touch?{x:touch.clientX,y:touch.clientY,time:performance.now()}:null;
  },{passive:true});
- window.addEventListener('touchcancel',()=>{touchStart=null;previousTap=null;},{passive:true});
+ window.addEventListener('touchcancel',()=>{touchStart=null;previousTap=null;resetDrag();},{passive:true});
+ window.addEventListener('touchmove',event=>{
+   if(!touchStart||scrolling||!flip||turning||reducedMotion()||event.touches.length!==1||window.getSelection()?.toString()){
+     resetDrag();
+     return;
+   }
+   const touch=event.touches[0];
+   const dx=touch.clientX-touchStart.x;
+   const dy=touch.clientY-touchStart.y;
+   if(Math.abs(dx)<18||Math.abs(dx)<Math.abs(dy)*1.4){resetDrag();return;}
+   const direction=dx<0?1:-1;
+   if((page()===0&&direction<0&&$chapterIndex===0)||
+      (page()===total()-1&&direction>0&&$chapterIndex===$lastChapterIndex)){
+     resetDrag();
+     return;
+   }
+   dragAngle=direction*Math.min(38,Math.abs(dx)/Math.max(1,viewport.clientWidth)*65);
+   viewport.style.setProperty('transform-origin',direction>0?'left center':'right center');
+   viewport.style.setProperty('transform','perspective(950px) rotateY('+dragAngle+'deg)');
+ },{passive:true});
  window.addEventListener('touchend',event=>{
    const start=touchStart;
    touchStart=null;
    if(!start||event.touches.length||window.getSelection()?.toString()){
+     resetDrag();
      previousTap=null;
      return;
    }
@@ -1124,6 +1246,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      window.paperlightMove(dx<0?1:-1);
      return;
    }
+   resetDrag();
    const now=performance.now();
    if(Math.hypot(dx,dy)>12||now-start.time>260||event.target?.closest?.('a,button,input,textarea,select,video,audio')){
      previousTap=null;
@@ -1137,21 +1260,59 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      Paperlight.onReaderTap($chapterIndex,1);
    }
  },{passive:true});
- window.paperlightTheme=function(next){mode=palettes[next]?next:'paper';viewport.style.background=palettes[mode].bg;document.documentElement.style.setProperty('background',palettes[mode].bg,'important');document.body.style.setProperty('color',palettes[mode].fg,'important');style.textContent=style.textContent.replace(/a\{color:[^}]+\}/,`a{color:${'$'}{palettes[mode].link}!important;}`);};
- window.paperlightFont=function(scale){
+ window.paperlightTheme=function(next){mode=palettes[next]?next:'paper';viewport.style.background=palettes[mode].bg;document.documentElement.style.setProperty('background',palettes[mode].bg,'important');document.body.style.setProperty('color',palettes[mode].fg,'important');style.textContent=style.textContent.replace(/a\{color:[^}]+\}/,`a{color:${'$'}{palettes[mode].link}!important;}`);applyDarkText();};
+ function readingAnchor(){
+   if(!document.caretRangeFromPoint) return null;
+   const margin=Math.min(type.margins,Math.floor(Math.min(layoutWidth,layoutHeight)/4));
+   for(const y of [margin+6,margin+22,margin+40]){
+     const caret=document.caretRangeFromPoint(margin+8,y);
+     const node=caret?.startContainer;
+     if(node?.nodeType!==3||!content.contains(node)) continue;
+     const rect=caret.getBoundingClientRect();
+     const offset=textOffset(textNodes(),node,caret.startOffset);
+     if(offset>=0&&rect.left>=0&&rect.left<layoutWidth&&rect.top>=0&&rect.top<layoutHeight) return offset;
+   }
+   return null;
+ }
+ function reflow(change){
+   resetDrag();
+   const anchor=readingAnchor();
    const progress=fraction();
    cancelMotion();
-   document.body.style.setProperty('font-size',scale+'em','important');
-   measurePages();
-   restore(progress);
+   change();
+   configureMode();
+   function restoreSpot(){
+     const range=anchor===null?null:makeRange(anchor,anchor+1,textNodes());
+     if(range) reveal(range,0);
+     else restore(progress);
+   }
+   restoreSpot();
+   return restoreSpot;
+ }
+ window.paperlightSetAppearance=function(next,font){
+   if(!font&&Object.keys(type).every(key=>type[key]===next[key])) return;
+   const restoreSpot=reflow(()=>{
+     type=next;
+     if(font){
+       fontStyle.textContent=`@font-face{font-family:PaperlightCustom;src:url("${'$'}{font}");font-display:swap;}`;
+       customFontReady=true;
+     }
+     document.body.style.setProperty('font-size',type.size+'em','important');
+   });
+   if(type.font==='custom'&&customFontReady&&document.fonts){
+     const generation=motionGeneration;
+     document.fonts.load('16px PaperlightCustom').then(()=>{
+       if(generation!==motionGeneration) return;
+       measurePages();
+       restoreSpot();
+     }).catch(()=>{});
+   }
  };
+ window.paperlightFont=scale=>window.paperlightSetAppearance({...type,size:scale});
  let reportTimer;
  window.addEventListener('resize',()=>{
    if(window.innerWidth===layoutWidth&&window.innerHeight===layoutHeight) return;
-   const progress=fraction();
-   cancelMotion();
-   configureMode();
-   restore(progress);
+   reflow(()=>{});
  });
  viewport.addEventListener('scroll',()=>{
    clearTimeout(reportTimer);

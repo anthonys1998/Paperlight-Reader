@@ -8,7 +8,7 @@ import java.io.FileInputStream
 import java.util.zip.ZipFile
 
 data class EpubChapter(val title: String, val file: File)
-data class EpubTocEntry(val title: String, val chapterIndex: Int)
+data class EpubTocEntry(val title: String, val chapterIndex: Int, val fragment: String? = null, val depth: Int = 0)
 data class EpubBook(
     val title: String,
     val author: String,
@@ -72,7 +72,7 @@ object EpubBookParser {
         val packageFile = resolveInside(root, root, opfPath ?: error("EPUB package document not found."))
         require(packageFile.isFile) { "EPUB package document is missing." }
 
-        data class ManifestItem(val href: String, val mediaType: String, val properties: String)
+        data class ManifestItem(val href: String, val mediaType: String, val fallback: String?)
         val manifest = linkedMapOf<String, ManifestItem>()
         val spine = mutableListOf<String>()
         var ncxId: String? = null
@@ -98,7 +98,7 @@ object EpubBookParser {
                     val href = p.getAttributeValue(null, "href")
                     if (id != null && href != null) {
                         val properties = p.getAttributeValue(null, "properties") ?: ""
-                        manifest[id] = ManifestItem(href, p.getAttributeValue(null, "media-type") ?: "", properties)
+                        manifest[id] = ManifestItem(href, p.getAttributeValue(null, "media-type") ?: "", p.getAttributeValue(null, "fallback"))
                         if ("nav" in properties.split(' ')) navId = id
                     }
                 }
@@ -108,35 +108,51 @@ object EpubBookParser {
         }
 
         val packageRoot = packageFile.parentFile ?: root
-        val chapters = spine.mapNotNull { id ->
-            val item = manifest[id] ?: return@mapNotNull null
-            val extension = item.href.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()
-            if (item.mediaType !in setOf("application/xhtml+xml", "text/html") && extension !in setOf("xhtml", "html", "htm")) {
-                return@mapNotNull null
+        fun readableItem(id: String): ManifestItem? {
+            val seen = mutableSetOf<String>()
+            var candidate: String? = id
+            while (candidate != null && seen.add(candidate)) {
+                val item = manifest[candidate] ?: return null
+                val extension = item.href.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()
+                if (item.mediaType in setOf("application/xhtml+xml", "text/html") || extension in setOf("xhtml", "html", "htm")) {
+                    val file = runCatching { resolveInside(root, packageRoot, item.href) }.getOrNull()
+                    if (file?.isFile == true) return item
+                }
+                candidate = item.fallback
             }
+            return null
+        }
+
+        val chapters = spine.mapNotNull { id ->
+            val item = readableItem(id) ?: return@mapNotNull null
             val file = resolveInside(root, packageRoot, item.href)
-            if (file.isFile) EpubChapter(file.nameWithoutExtension.replace('_', ' ').ifBlank { title }, file) else null
+            EpubChapter(file.nameWithoutExtension.replace('_', ' ').ifBlank { title }, file)
         }
         require(chapters.isNotEmpty()) { "No readable XHTML chapters were found in this EPUB." }
 
         val lookup = chapters.mapIndexed { index, chapter -> chapter.file.canonicalPath to index }.toMap()
         val toc = mutableListOf<EpubTocEntry>()
         navId?.let(manifest::get)?.let { item ->
-            val navFile = resolveInside(root, packageRoot, item.href)
-            if (navFile.isFile) parseNav(navFile, root, lookup, toc)
+            toc += runCatching {
+                val navFile = resolveInside(root, packageRoot, item.href)
+                if (navFile.isFile) buildList<EpubTocEntry> { parseNav(navFile, root, lookup, this) } else emptyList()
+            }.getOrDefault(emptyList())
         }
         if (toc.isEmpty()) {
             ncxId?.let(manifest::get)?.let { item ->
-                val ncxFile = resolveInside(root, packageRoot, item.href)
-                if (ncxFile.isFile) parseNcx(ncxFile, root, lookup, toc)
+                toc += runCatching {
+                    val ncxFile = resolveInside(root, packageRoot, item.href)
+                    if (ncxFile.isFile) buildList<EpubTocEntry> { parseNcx(ncxFile, root, lookup, this) } else emptyList()
+                }.getOrDefault(emptyList())
             }
         }
         if (toc.isEmpty()) chapters.forEachIndexed { index, chapter -> toc += EpubTocEntry(chapter.title, index) }
-        return EpubBook(title, author, chapters, toc.distinctBy { it.chapterIndex }, language)
+        return EpubBook(title, author, chapters, toc.distinctBy { Triple(it.chapterIndex, it.fragment, it.title) }, language)
     }
 
     private fun resolveInside(root: File, base: File, href: String): File {
         val decoded = Uri.decode(href.substringBefore('#').substringBefore('?'))
+        require(!Uri.parse(href).isAbsolute && !decoded.startsWith("/")) { "Unsupported EPUB resource URL." }
         val file = File(base, decoded).canonicalFile
         require(file.path.startsWith(root.canonicalPath + File.separator) || file == root) {
             "Unsafe path in EPUB package."
@@ -144,9 +160,13 @@ object EpubBookParser {
         return file
     }
 
+    private fun fragmentOf(href: String): String? = href.substringAfter('#', "")
+        .takeIf { it.isNotBlank() }?.let(Uri::decode)
+
     private fun parseNav(file: File, root: File, lookup: Map<String, Int>, output: MutableList<EpubTocEntry>) {
         var inToc = false
         var navDepth = 0
+        var listDepth = 0
         var href: String? = null
         var anchorDepth = -1
         var label = StringBuilder()
@@ -158,6 +178,7 @@ object EpubBookParser {
                         val type = p.getAttributeValue("http://www.idpf.org/2007/ops", "type") ?: ""
                         if ("toc" in type.split(' ')) inToc = true
                     }
+                    if (inToc && p.name in setOf("ol", "ul")) listDepth++
                     if (inToc && p.name == "a") {
                         href = p.getAttributeValue(null, "href")
                         anchorDepth = p.depth
@@ -170,9 +191,10 @@ object EpubBookParser {
                         val target = runCatching { resolveInside(root, file.parentFile ?: root, href!!) }.getOrNull()
                         val index = target?.canonicalPath?.let(lookup::get)
                         val text = label.toString().trim()
-                        if (index != null && text.isNotBlank()) output += EpubTocEntry(text, index)
+                        if (index != null && text.isNotBlank()) output += EpubTocEntry(text, index, fragmentOf(href!!), (listDepth - 1).coerceAtLeast(0))
                         href = null
                     }
+                    if (inToc && p.name in setOf("ol", "ul")) listDepth = (listDepth - 1).coerceAtLeast(0)
                     if (p.name == "nav" && navDepth > 0) {
                         navDepth--
                         if (navDepth == 0) inToc = false
@@ -183,14 +205,15 @@ object EpubBookParser {
     }
 
     private fun parseNcx(file: File, root: File, lookup: Map<String, Int>, output: MutableList<EpubTocEntry>) {
-        data class NavPoint(var label: StringBuilder = StringBuilder(), var src: String? = null)
+        data class NavPoint(val depth: Int, val label: StringBuilder = StringBuilder(), var src: String? = null)
         val stack = java.util.ArrayDeque<NavPoint>()
+        val ordered = mutableListOf<NavPoint>()
         var inLabel = false
         var inText = false
         parseXml(file) { p ->
             when (p.eventType) {
                 XmlPullParser.START_TAG -> when (p.name) {
-                    "navPoint" -> stack.addLast(NavPoint())
+                    "navPoint" -> NavPoint(stack.size).also { stack.addLast(it); ordered.add(it) }
                     "navLabel" -> inLabel = true
                     "text" -> if (inLabel) inText = true
                     "content" -> stack.peekLast()?.src = p.getAttributeValue(null, "src")
@@ -199,15 +222,16 @@ object EpubBookParser {
                 XmlPullParser.END_TAG -> when (p.name) {
                     "text" -> inText = false
                     "navLabel" -> inLabel = false
-                    "navPoint" -> {
-                        val point = if (stack.isEmpty()) null else stack.removeLast()
-                        val target = point?.src?.let { runCatching { resolveInside(root, file.parentFile ?: root, it) }.getOrNull() }
-                        val index = target?.canonicalPath?.let(lookup::get)
-                        val label = point?.label?.toString()?.trim().orEmpty()
-                        if (index != null && label.isNotBlank()) output += EpubTocEntry(label, index)
-                    }
+                    "navPoint" -> if (stack.isNotEmpty()) stack.removeLast()
                 }
             }
+        }
+        ordered.forEach { point ->
+            val src = point.src ?: return@forEach
+            val target = runCatching { resolveInside(root, file.parentFile ?: root, src) }.getOrNull()
+            val index = target?.canonicalPath?.let(lookup::get) ?: return@forEach
+            val label = point.label.toString().trim()
+            if (label.isNotBlank()) output += EpubTocEntry(label, index, fragmentOf(src), point.depth)
         }
     }
 
