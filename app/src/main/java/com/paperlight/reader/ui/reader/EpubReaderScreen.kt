@@ -44,6 +44,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -94,7 +96,10 @@ fun EpubReaderScreen(
             .filterIsInstance<Activity>().firstOrNull()
         val controller = activity?.let { WindowCompat.getInsetsController(it.window, mainView) }
         val oldBehavior = controller?.systemBarsBehavior
+        val oldLightStatus = controller?.isAppearanceLightStatusBars
         val window = activity?.window
+        val oldContrast = if (android.os.Build.VERSION.SDK_INT >= 29) window?.isStatusBarContrastEnforced else null
+        if (android.os.Build.VERSION.SDK_INT >= 29) window?.isStatusBarContrastEnforced = false
         val oldCutoutMode = if (android.os.Build.VERSION.SDK_INT >= 28)
             window?.attributes?.layoutInDisplayCutoutMode else null
         if (android.os.Build.VERSION.SDK_INT >= 28 && window != null) {
@@ -118,6 +123,9 @@ fun EpubReaderScreen(
             readerLifecycle.removeObserver(observer)
             controller?.show(WindowInsetsCompat.Type.systemBars())
             if (oldBehavior != null) controller?.systemBarsBehavior = oldBehavior
+            if (android.os.Build.VERSION.SDK_INT >= 29 && oldContrast != null)
+                window?.isStatusBarContrastEnforced = oldContrast
+            if (oldLightStatus != null) controller?.isAppearanceLightStatusBars = oldLightStatus
             if (android.os.Build.VERSION.SDK_INT >= 28 && window != null && oldCutoutMode != null) {
                 window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = oldCutoutMode }
             }
@@ -153,6 +161,17 @@ fun EpubReaderScreen(
     }
     var bookmarks by remember(book.id) { mutableStateOf(bookmarkStore.read(book.id)) }
     var chapterTurnDirection by remember(book.id) { mutableIntStateOf(0) }
+    var chapterSnapshot by remember(book.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var snapshotReady by remember(book.id) { mutableStateOf(false) }
+    val snapshotProgress = remember(book.id) { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(snapshotReady, chapterSnapshot) {
+        if (snapshotReady && chapterSnapshot != null) {
+            snapshotProgress.animateTo(1f, androidx.compose.animation.core.tween(180))
+            chapterSnapshot = null
+            snapshotReady = false
+            snapshotProgress.snapTo(0f)
+        }
+    }
     var scrollMode by remember { mutableStateOf(preferences.getBoolean("scrollMode", false)) }
     var flip by remember { mutableStateOf(preferences.getBoolean("pageFlip", true)) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
@@ -243,6 +262,13 @@ fun EpubReaderScreen(
     val chapter = publication.chapters[chapterIndex]
     val palette = readerPalettes[themeMode]
     val background = palette.paper
+    SideEffect {
+        val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
+            .filterIsInstance<Activity>().firstOrNull()
+        activity?.window?.let { window ->
+            WindowCompat.getInsetsController(window, mainView).isAppearanceLightStatusBars = themeMode == 0
+        }
+    }
     val foreground = palette.ink
     val toc = publication.tableOfContents
 
@@ -271,7 +297,7 @@ fun EpubReaderScreen(
         if (!openDictionary(context, text)) toolMessage = "Open Wiktionary in a web browser to look up this text."
     }
 
-    fun readChapter() {
+    fun readChapter(startOffset: Int? = null) {
         if (!speech.ready) {
             toolMessage = "Android text-to-speech is unavailable. Check your installed speech engine."
             return
@@ -281,10 +307,10 @@ fun EpubReaderScreen(
             return
         }
         val sourceChapter = chapterIndex
-        webView?.evaluateJavascript("window.paperlightChapterText?.()") { result ->
+        webView?.evaluateJavascript("window.paperlightChapterText?.($startOffset)") { result ->
             val text = runCatching { JSONTokener(result ?: "null").nextValue() as? String }.getOrNull()
             if (chapterIndex == sourceChapter) {
-                if (text.isNullOrBlank()) toolMessage = "This chapter has no text to read aloud."
+                if (text.isNullOrBlank()) toolMessage = "No readable text at this position."
                 else speech.play(text, publication.language)
             }
         }
@@ -321,6 +347,20 @@ fun EpubReaderScreen(
             webView?.evaluateJavascript("window.paperlightTheme?.('$theme')", null)
         }
     }
+    LaunchedEffect(webView, chapterIndex, viewport.width > 0 && viewport.height > 0) {
+        val view = webView ?: return@LaunchedEffect
+        if (viewport.width <= 0 || viewport.height <= 0 || loadedChapterIndex == chapterIndex)
+            return@LaunchedEffect
+        val requestedChapter = chapterIndex
+        val html = withContext(Dispatchers.IO) { runCatching { chapterHtml(chapter) } }.getOrElse {
+            chapterSnapshot = null
+            toolMessage = it.message ?: "Could not load this section."
+            return@LaunchedEffect
+        }
+        loadedChapterIndex = requestedChapter
+        loadChapter(view, chapter, html)
+    }
+
     LaunchedEffect(chapterIndex) {
         speech.stop()
         selection = null
@@ -328,7 +368,7 @@ fun EpubReaderScreen(
 
     ReaderTheme(palette, dark = themeMode == 1) {
         Box(Modifier.fillMaxSize().background(background)) {
-            Box(Modifier.matchParentSize().displayCutoutPadding().padding(top = 27.dp, bottom = 23.dp)
+            Box(Modifier.matchParentSize().displayCutoutPadding().padding(bottom = 23.dp)
                 .onSizeChanged { viewport = it }) {
                 AndroidView(
                     modifier = Modifier.matchParentSize(),
@@ -393,9 +433,20 @@ fun EpubReaderScreen(
                                 }
                                 @JavascriptInterface fun onChapterTurn(sourceChapter: Int, direction: Int) {
                                     mainView.post {
-                                        if (sourceChapter != chapterIndex || direction !in listOf(-1, 1)) return@post
+                                        if (sourceChapter != chapterIndex || chapterSnapshot != null || direction !in listOf(-1, 1)) return@post
                                         val target = chapterIndex + direction
                                         if (target !in publication.chapters.indices) return@post
+                                        val view = webView
+                                        if (!scrollMode && view != null && view.width > 0 && view.height > 0 &&
+                                            android.provider.Settings.Global.getFloat(context.contentResolver,
+                                                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f) {
+                                            chapterSnapshot = runCatching {
+                                                android.graphics.Bitmap.createBitmap(view.width, view.height,
+                                                    android.graphics.Bitmap.Config.ARGB_8888).also { bitmap ->
+                                                    view.draw(android.graphics.Canvas(bitmap))
+                                                }
+                                            }.getOrNull()
+                                        }
                                         chapterTurnDirection = direction
                                         initialChapterFraction = if (direction < 0) 1f else 0f
                                         isRestoringPosition = true
@@ -413,7 +464,6 @@ fun EpubReaderScreen(
                                         themeMode, appearance.size, fraction, scrollMode, loadingChapter,
                                         view.width, view.height, flip,
                                         lastChapterIndex = publication.chapters.lastIndex,
-                                        entryDirection = chapterTurnDirection,
                                     )) {
                                         if (chapterIndex == loadingChapter) {
                                             pendingScript?.takeIf { it.first == loadingChapter }?.let {
@@ -422,7 +472,14 @@ fun EpubReaderScreen(
                                             }
                                             isRestoringPosition = false
                                             initialChapterFraction = 0f
-                                            chapterTurnDirection = 0
+                                            if (chapterSnapshot != null) {
+                                                view.postVisualStateCallback(loadingChapter.toLong(),
+                                                    object : WebView.VisualStateCallback() {
+                                                        override fun onComplete(requestId: Long) {
+                                                            if (chapterIndex == loadingChapter) snapshotReady = true
+                                                        }
+                                                    })
+                                            }
                                         }
                                     }
                                 }
@@ -450,33 +507,23 @@ fun EpubReaderScreen(
                     },
                     update = { view ->
                         webView = view
-                        if (viewport.width > 0 && viewport.height > 0 && loadedChapterIndex != chapterIndex) {
-                            val requestedChapter = chapterIndex
-                            loadedChapterIndex = requestedChapter
-                            view.post {
-                                if (view.width > 0 && view.height > 0 && loadedChapterIndex == requestedChapter && chapterIndex == requestedChapter) {
-                                    loadChapter(view, chapter)
-                                }
-                            }
-                        }
+
                     }
                 )
-
-            }
-            if (!barsVisible) {
-                Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(palette.paper)
-                    .displayCutoutPadding().height(27.dp).padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.fillMaxHeight().width(36.dp).clickable(onClick = onBack),
-                        contentAlignment = Alignment.Center) {
-                        Icon(Icons.Rounded.ArrowBack, "Back", Modifier.size(16.dp), tint = foreground)
-                    }
-                    Text(publication.title, Modifier.weight(1f).clickable { barsVisible = true }, color = foreground,
-                        style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Box(Modifier.fillMaxHeight().width(36.dp).clickable { barsVisible = true },
-                        contentAlignment = Alignment.Center) {
-                        Icon(Icons.Rounded.MoreVert, "Show reader controls", Modifier.size(16.dp), tint = foreground)
-                    }
+                chapterSnapshot?.let { bitmap ->
+                    androidx.compose.foundation.Image(bitmap.asImageBitmap(), null,
+                        Modifier.matchParentSize().graphicsLayer {
+                            val progress = snapshotProgress.value
+                            if (flip) {
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(
+                                    if (chapterTurnDirection > 0) 0f else 1f, .5f)
+                                cameraDistance = size.width * 2f
+                                rotationY = -chapterTurnDirection * 89f * progress
+                                alpha = 1f - progress * progress
+                            } else {
+                                translationX = -chapterTurnDirection * size.width * progress
+                            }
+                        })
                 }
             }
             ReaderFooter(Modifier.align(Alignment.BottomCenter), palette, chapterTitles[chapterIndex],
@@ -559,6 +606,10 @@ fun EpubReaderScreen(
                             selection = null
                             webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
                         }) { Text("Dictionary") }
+                        TextButton(onClick = {
+                            readChapter(selected.start)
+                            webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
+                        }) { Text("Listen") }
                     }
                 }
             }
@@ -969,7 +1020,7 @@ private fun viewNext(view: WebView?, direction: Int) {
     view?.evaluateJavascript("window.paperlightMove($direction)", null)
 }
 
-private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean, lastChapterIndex: Int, entryDirection: Int): String = """
+private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean, lastChapterIndex: Int): String = """
 (function(){
  const palettes={white:{bg:'#F9F9F5',fg:'#2C302E',link:'#395F55'},dark:{bg:'#1D201F',fg:'#E1DFD5',link:'#B4CA9A'}};
  let mode=${when (themeMode) { 1 -> "'dark'"; else -> "'white'" }};
@@ -983,7 +1034,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  ::highlight(paperlight-blue){background:#9bd9fa;color:#28231a;}
  ::highlight(paperlight-pink){background:#ffb9d0;color:#28231a;}
  mark[data-paperlight-note]{color:#28231a!important;}
- .paperlight-note-marker{position:fixed;z-index:5;width:28px;height:28px;padding:0;border:0;border-radius:50%;background:#52633d;color:white;font-size:16px;line-height:28px;text-align:center;}
+ .paperlight-note-marker{position:fixed;z-index:5;pointer-events:none;box-sizing:border-box;border-bottom:2px dotted #52633d;}
  p,li{orphans:2;widows:2;} img,svg,video{max-width:100%!important;object-fit:contain!important;break-inside:avoid!important;} h1,h2,h3,h4{break-after:avoid!important;} a{color:${'$'}{palettes[mode].link}!important;}`;
  document.head.appendChild(style);
  const darkText=document.createElement('style');
@@ -1013,13 +1064,10 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  let pageStride=1;
  let turning=false;
  let layoutWidth=0,layoutHeight=0;
- let activeAnimation=null;
  let motionGeneration=0;
  function cancelMotion(){
    resetDrag();
    motionGeneration++;
-   if(activeAnimation) activeAnimation.cancel();
-   activeAnimation=null;
    turning=false;
  }
  // Give the viewport and text columns separate boxes so publisher body styles
@@ -1165,15 +1213,6 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  let flip=$flip;
  window.paperlightSetFlip=function(enabled){flip=enabled;};
  const reducedMotion=()=>window.matchMedia('(prefers-reduced-motion: reduce)').matches;
- // Animate the viewport so transitions cannot change column overflow.
- async function animate(frames,options){
-   if(!viewport.animate) return;
-   if(activeAnimation) activeAnimation.cancel();
-   const animation=viewport.animate(frames,options);
-   activeAnimation=animation;
-   await animation.finished.catch(()=>{});
-   if(activeAnimation===animation&&options.fill!=='forwards') activeAnimation=null;
- }
  // Keep a real adjacent page beneath the turning sheet. Both directions use
  // the SAME right-to-left fold, with time reversed for a backward turn.
  function copyPage(offset){
@@ -1196,9 +1235,12 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    underPage.style.zIndex='0';
    viewport.style.zIndex='1';
    if(direction<0 && adjacent>=0){dragScroll=true;moveTo(adjacent*step(),'instant');}
-   backPage=copyPage(viewport.scrollLeft);
+   // Model the reverse side as paper without cloning the chapter a second time.
+   backPage=document.createElement('div');
+   backPage.style.cssText='position:fixed;inset:0;pointer-events:none;background:'+palettes[mode].bg;
+   document.body.appendChild(backPage);
    backPage.style.zIndex='2';
-   backPage.style.opacity='.38';
+   backPage.style.opacity='.86';
    fold.style.zIndex='3';
  }
  function curlFrame(direction,progress){
@@ -1236,16 +1278,11 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    backPage.style.clipPath=polygon(lifted);
    const reflected=lifted.map(([x,y])=>{
      const d=signed([x,y]);
-     return [x-2*d*nx,y-2*d*ny].join(',');
-   }).join(' ');
-   const creaseX=distance*nx,creaseY=distance*ny;
-   const svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+w+' '+h+'"><defs>'+
-     '<linearGradient id="f" gradientUnits="userSpaceOnUse" x1="'+creaseX+'" y1="'+creaseY+'" x2="'+(creaseX-46*nx)+'" y2="'+(creaseY-46*ny)+'">'+
-     '<stop stop-color="#000" stop-opacity=".27"/><stop offset=".25" stop-color="'+palettes[mode].bg+'" stop-opacity=".83"/>'+
-     '<stop offset="1" stop-color="'+palettes[mode].bg+'" stop-opacity=".91"/></linearGradient></defs>'+
-     '<polygon points="'+reflected+'" fill="url(#f)" stroke="#000" stroke-opacity=".17" stroke-width="1"/></svg>';
+     return [x-2*d*nx,y-2*d*ny];
+   });
    fold.style.display='block';
-   fold.style.backgroundImage='url("data:image/svg+xml,'+encodeURIComponent(svg)+'")';
+   fold.style.clipPath=polygon(reflected);
+   fold.style.background='linear-gradient(105deg, transparent 25%, #0003)';
  }
  function preview(direction,p,style){
    if(!dragStyle) clearNoteMarkers();
@@ -1280,16 +1317,6 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    });
  }
 
- function animateEntry(direction){
-   if(flip&&direction<0){
-     // The previous chapter is now loaded; unfold its last page in reverse.
-     return settle(1,.94,0,'curl').then(resetDrag);
-   }
-   return animate([
-     {opacity:.82,transform:flip?'none':'translateX('+(direction*24)+'px)'},
-     {opacity:1,transform:'none'}
-   ],{duration:130,easing:'ease-out'});
- }
  window.paperlightMove=async function(direction){
    if(turning) return;
    const nextPage=page()+direction;
@@ -1300,10 +1327,14 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      resetDrag();
      return;
    }
+   if(atEdge){
+     resetDrag();
+     Paperlight.onChapterTurn($chapterIndex,direction);
+     return;
+   }
    if(scrolling||reducedMotion()){
      resetDrag();
-     if(atEdge) Paperlight.onChapterTurn($chapterIndex,direction);
-     else if(scrolling) moveTo(position()+direction*step(),'smooth');
+     if(scrolling) moveTo(position()+direction*step(),'smooth');
      else {currentPage=nextPage;moveTo(currentPage*step(),'instant');report();}
      return;
    }
@@ -1315,17 +1346,13 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    try {
      await settle(direction,start,1,style);
      if(generation!==motionGeneration) return;
-     if(atEdge){
-       Paperlight.onChapterTurn($chapterIndex,direction);
-       return;
-     }
      resetDrag();
      currentPage=nextPage;
      moveTo(currentPage*step(),'instant');
 
    } finally {
      if(generation===motionGeneration){
-       if(!atEdge) resetDrag();
+       resetDrag();
        turning=false;
        report();
      }
@@ -1409,22 +1436,19 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    const nodes=textNodes();
    for(const [start,end,color,id] of noteOffsets){
      const range=makeRange(start,end,nodes);
-     const rect=range&&Array.from(range.getClientRects()).find(box=>
-       box.right>0&&box.left<layoutWidth&&box.bottom>0&&box.top<layoutHeight);
-     if(!rect) continue;
-     const marker=document.createElement('button');
-     marker.className='paperlight-note-marker';
-     marker.type='button';
-     marker.setAttribute('aria-label','Read note');
-     marker.textContent='▤';
-     const y=Math.max(0,Math.min(rect.top,layoutHeight-28));
-     let lane=0;
-     while(noteMarkers.some(other=>parseFloat(other.style.right)===lane*29&&Math.abs(parseFloat(other.style.top)-y)<28)) lane++;
-     marker.style.right=(lane*29)+'px';
-     marker.style.top=y+'px';
-     marker.addEventListener('click',()=>Paperlight.onNoteTap($chapterIndex,id));
-     document.body.appendChild(marker);
-     noteMarkers.push(marker);
+     if(!range) continue;
+     for(const rect of range.getClientRects()){
+       if(rect.width<=0||rect.height<=0||rect.right<=0||rect.left>=layoutWidth||rect.bottom<=0||rect.top>=layoutHeight) continue;
+       const marker=document.createElement('div');
+       marker.className='paperlight-note-marker';
+       marker.dataset.noteId=id;
+       marker.style.left=Math.max(0,rect.left)+'px';
+       marker.style.top=Math.max(0,rect.top)+'px';
+       marker.style.width=(Math.min(layoutWidth,rect.right)-Math.max(0,rect.left))+'px';
+       marker.style.height=(Math.min(layoutHeight,rect.bottom)-Math.max(0,rect.top))+'px';
+       document.body.appendChild(marker);
+       noteMarkers.push(marker);
+     }
    }
  }
  window.paperlightHighlights=function(offsets){
@@ -1518,7 +1542,45 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    Paperlight.onSearchMiss($chapterIndex);
  };
  let searchMarkerTimer;
- window.paperlightChapterText=()=>content.innerText.trim().slice(0,250000);
+ window.paperlightChapterText=(startOffset)=>{
+   const selection=window.getSelection();
+   const nodes=textNodes();
+   let anchor=Number.isInteger(startOffset)?startOffset:null;
+   if(anchor===null && selection?.rangeCount && !selection.isCollapsed){
+     const range=selection.getRangeAt(0);
+     if(content.contains(range.startContainer))
+       anchor=textOffset(nodes,range.startContainer,range.startOffset);
+   }
+   if(anchor===null || anchor<0){
+     const range=document.createRange();
+     for(const {node,start} of nodes){
+       if(!node.data.trim()) continue;
+       range.selectNodeContents(node);
+       const visible=rect=>rect.width>0&&rect.height>0&&rect.right>0&&rect.left<layoutWidth&&rect.bottom>0&&rect.top<layoutHeight;
+       if(!Array.from(range.getClientRects()).some(visible)) continue;
+       let low=0, high=node.length;
+       while(high-low>1){
+         const mid=Math.floor((low+high)/2);
+         range.setStart(node,0);
+         range.setEnd(node,mid);
+         if(Array.from(range.getClientRects()).some(visible)) high=mid;
+         else low=mid;
+       }
+       anchor=start+high-1;
+       break;
+     }
+   }
+   if(anchor===null) return '';
+   const portion=document.createRange();
+   const first=nodes.find(item=>item.end>anchor);
+   if(!first) return '';
+   portion.setStart(first.node,Math.max(0,anchor-first.start));
+   portion.setEnd(content,content.childNodes.length);
+   const copy=portion.cloneContents();
+   copy.querySelectorAll('script,style,noscript,svg,[hidden]').forEach(node=>node.remove());
+   copy.querySelectorAll('p,div,li,h1,h2,h3,h4,h5,h6,br').forEach(node=>node.after(document.createTextNode(' ')));
+   return copy.textContent.trim().slice(0,250000);
+ };
  window.paperlightAnchor=function(id){
    const target=document.getElementById(id)||document.getElementsByName(id)[0];
    if(target&&content.contains(target)) reveal(target);
@@ -1570,6 +1632,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      return;
    }
    if(event.cancelable) event.preventDefault();
+   if(page()+direction<0||page()+direction>=total()) return;
    const style=flip?'curl':'slide';
    if(dragStyle&&(dragDirection!==direction||dragStyle!==style)) resetDrag();
    preview(direction,Math.min(1,Math.abs(dx)/Math.max(1,viewport.clientWidth)),style);
@@ -1594,6 +1657,15 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    const now=performance.now();
    if(Math.hypot(dx,dy)>12||now-start.time>260||event.target?.closest?.('a,button,input,textarea,select,video,audio')){
      previousTap=null;
+     return;
+   }
+   const note=noteMarkers.find(marker=>{
+     const rect=marker.getBoundingClientRect();
+     return touch.clientX>=rect.left&&touch.clientX<=rect.right&&touch.clientY>=rect.top&&touch.clientY<=rect.bottom;
+   });
+   if(note){
+     previousTap=null;
+     Paperlight.onNoteTap($chapterIndex,note.dataset.noteId);
      return;
    }
    if(previousTap&&now-previousTap.time<320&&Math.hypot(touch.clientX-previousTap.x,touch.clientY-previousTap.y)<36){
@@ -1670,6 +1742,6 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    moveTo(currentPage*step(),'instant');
    report();
  },true);
- if($entryDirection&&!scrolling&&!reducedMotion()) animateEntry($entryDirection);
+
 })();
 """.trimIndent()

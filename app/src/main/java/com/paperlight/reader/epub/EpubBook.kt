@@ -26,39 +26,45 @@ object EpubBookParser {
         require(epubFile.isFile) { "The imported EPUB file is missing." }
         if (!destination.exists() && !destination.mkdirs()) error("Cannot create EPUB cache directory")
 
-        // Re-extract into a clean cache to avoid stale resources from a previous import.
-        destination.listFiles()?.forEach { it.deleteRecursively() }
         val root = destination.canonicalFile
-        ZipFile(epubFile).use { zip ->
-            val entries = zip.entries().asSequence().toList()
-            require(entries.size <= MAX_ENTRIES) { "This EPUB contains too many archive entries." }
-            require(entries.sumOf { it.size.coerceAtLeast(0L) } <= MAX_UNCOMPRESSED_BYTES) {
-                "This EPUB is unusually large and cannot be safely imported."
-            }
-            var copiedBytes = 0L
-            entries.forEach { entry ->
-                val out = File(root, entry.name).canonicalFile
-                require(out.path.startsWith(root.path + File.separator) || out == root) {
-                    "Unsafe path in EPUB archive"
+        val stamp = "1:${epubFile.length()}:${epubFile.lastModified()}"
+        val marker = File(destination.parentFile, destination.name + ".prepared-epub")
+        if (runCatching { marker.readText() }.getOrNull() != stamp ||
+            !File(root, "META-INF/container.xml").isFile) {
+            marker.delete()
+            destination.listFiles()?.forEach { it.deleteRecursively() }
+            ZipFile(epubFile).use { zip ->
+                val entries = zip.entries().asSequence().toList()
+                require(entries.size <= MAX_ENTRIES) { "This EPUB contains too many archive entries." }
+                require(entries.sumOf { it.size.coerceAtLeast(0L) } <= MAX_UNCOMPRESSED_BYTES) {
+                    "This EPUB is unusually large and cannot be safely imported."
                 }
-                if (entry.isDirectory) out.mkdirs() else {
-                    out.parentFile?.mkdirs()
-                    zip.getInputStream(entry).use { input ->
-                        out.outputStream().use { output ->
-                            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                copiedBytes += count
-                                require(copiedBytes <= MAX_UNCOMPRESSED_BYTES) {
-                                    "This EPUB expands beyond the safe extraction limit."
+                var copiedBytes = 0L
+                entries.forEach { entry ->
+                    val out = File(root, entry.name).canonicalFile
+                    require(out.path.startsWith(root.path + File.separator) || out == root) {
+                        "Unsafe path in EPUB archive"
+                    }
+                    if (entry.isDirectory) out.mkdirs() else {
+                        out.parentFile?.mkdirs()
+                        zip.getInputStream(entry).use { input ->
+                            out.outputStream().use { output ->
+                                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    copiedBytes += count
+                                    require(copiedBytes <= MAX_UNCOMPRESSED_BYTES) {
+                                        "This EPUB expands beyond the safe extraction limit."
+                                    }
+                                    output.write(buffer, 0, count)
                                 }
-                                output.write(buffer, 0, count)
                             }
                         }
                     }
                 }
             }
+
         }
 
         val container = File(root, "META-INF/container.xml")
@@ -147,6 +153,7 @@ object EpubBookParser {
             }
         }
         if (toc.isEmpty()) chapters.forEachIndexed { index, chapter -> toc += EpubTocEntry(chapter.title, index) }
+        if (!marker.isFile) runCatching { marker.writeText(stamp) }
         return EpubBook(title, author, chapters, toc.distinctBy { Triple(it.chapterIndex, it.fragment, it.title) }, language)
     }
 

@@ -13,14 +13,23 @@ internal fun openLocalText(book: BookEntity, directory: File): EpubBook {
     val source = File(book.localPath)
     val limit = if (book.format == "TXT") 16L * 1024 * 1024 else 64L * 1024 * 1024
     require(source.length() in 1..limit) { "This ${book.format} file is empty or too large to open." }
-    directory.deleteRecursively()
-    check(directory.mkdirs()) { "Couldn’t prepare this book." }
-    val chapters = try {
-        if (book.format == "TXT") textChapters(source, directory)
-        else KindleImport.chapters(source, directory)
-    } catch (failure: Exception) {
+    val stamp = "1:${source.length()}:${source.lastModified()}"
+    val marker = File(directory, ".prepared-text")
+    val cached = if (marker.isFile && runCatching { marker.readText() }.getOrNull() == stamp) {
+        preparedChapters(directory, if (book.format == "TXT") "text-" else "part")
+    } else emptyList()
+    val chapters = cached.ifEmpty {
         directory.deleteRecursively()
-        throw failure
+        check(directory.mkdirs()) { "Couldn’t prepare this book." }
+        try {
+            val result = if (book.format == "TXT") textChapters(source, directory)
+                else KindleImport.chapters(source, directory)
+            marker.writeText(stamp)
+            result
+        } catch (failure: Exception) {
+            directory.deleteRecursively()
+            throw failure
+        }
     }
     val contents = chapters.mapIndexed { index, chapter -> EpubTocEntry(chapter.title, index) }
     return EpubBook(book.title, book.author, chapters, contents)
@@ -77,11 +86,15 @@ internal object KindleImport {
             4 -> error("Couldn’t write the local Kindle reading copy.")
             else -> error("Couldn’t read this MOBI or AZW book.")
         }
-        val parts = directory.listFiles().orEmpty().mapNotNull { file ->
-            val number = file.name.removePrefix("part").removeSuffix(".html").toIntOrNull()
-            if (file.name.startsWith("part") && file.extension == "html" && number != null) number to file else null
-        }.sortedBy { it.first }
-        require(parts.isNotEmpty()) { "This Kindle file has no readable reflowable sections." }
-        return parts.mapIndexed { index, (_, file) -> EpubChapter("Section ${index + 1}", file) }
+        return preparedChapters(directory, "part").also {
+            require(it.isNotEmpty()) { "This Kindle file has no readable reflowable sections." }
+        }
     }
 }
+
+private fun preparedChapters(directory: File, prefix: String): List<EpubChapter> =
+    directory.listFiles().orEmpty().mapNotNull { file ->
+        if (!file.isFile || !file.name.startsWith(prefix) || file.extension != "html") return@mapNotNull null
+        val number = file.nameWithoutExtension.removePrefix(prefix).toIntOrNull() ?: return@mapNotNull null
+        number to file
+    }.sortedBy { it.first }.mapIndexed { index, (_, file) -> EpubChapter("Section ${index + 1}", file) }
