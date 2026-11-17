@@ -1,6 +1,9 @@
 package com.paperlight.reader.ui.reader
 
 import android.app.Activity
+import android.os.BatteryManager
+import android.text.format.DateFormat
+import kotlinx.coroutines.delay
 import android.content.ContextWrapper
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -15,6 +18,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -88,6 +93,14 @@ fun EpubReaderScreen(
             .filterIsInstance<Activity>().firstOrNull()
         val controller = activity?.let { WindowCompat.getInsetsController(it.window, mainView) }
         val oldBehavior = controller?.systemBarsBehavior
+        val window = activity?.window
+        val oldCutoutMode = if (android.os.Build.VERSION.SDK_INT >= 28)
+            window?.attributes?.layoutInDisplayCutoutMode else null
+        if (android.os.Build.VERSION.SDK_INT >= 28 && window != null) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         fun immerse() {
             controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller?.hide(WindowInsetsCompat.Type.systemBars())
@@ -104,6 +117,9 @@ fun EpubReaderScreen(
             readerLifecycle.removeObserver(observer)
             controller?.show(WindowInsetsCompat.Type.systemBars())
             if (oldBehavior != null) controller?.systemBarsBehavior = oldBehavior
+            if (android.os.Build.VERSION.SDK_INT >= 28 && window != null && oldCutoutMode != null) {
+                window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = oldCutoutMode }
+            }
         }
     }
     val latestProgress by rememberUpdatedState(onProgress)
@@ -112,6 +128,8 @@ fun EpubReaderScreen(
     val annotationStore = remember(context) { ReaderAnnotationStore(context) }
     var annotations by remember(book.id) { mutableStateOf(annotationStore.read(book.id)) }
     var selection by remember(book.id) { mutableStateOf<ReaderAnnotation?>(null) }
+    var openNote by remember(book.id) { mutableStateOf<ReaderAnnotation?>(null) }
+    var colorPicker by remember(book.id) { mutableStateOf<ReaderAnnotation?>(null) }
     var editingNote by remember(book.id) { mutableStateOf<Pair<BookEntity, ReaderAnnotation>?>(null) }
     var showNotes by remember { mutableStateOf(false) }
     var otherNotesBook by remember(book.id) { mutableStateOf<BookEntity?>(null) }
@@ -270,7 +288,7 @@ fun EpubReaderScreen(
         if (reportedChapter == chapterIndex) {
             val ranges = JSONArray()
             annotations.filter { it.chapter == chapterIndex }.forEach {
-                ranges.put(JSONArray().put(it.start).put(it.end))
+                ranges.put(JSONArray().put(it.start).put(it.end).put(it.color).put(it.id).put(it.note.isNotBlank()))
             }
             webView?.evaluateJavascript("window.paperlightHighlights?.($ranges)", null)
         }
@@ -304,7 +322,8 @@ fun EpubReaderScreen(
 
     ReaderTheme(palette, dark = themeMode == 1) {
         Box(Modifier.fillMaxSize().background(background)) {
-            Box(Modifier.matchParentSize().onSizeChanged { viewport = it }) {
+            Box(Modifier.matchParentSize().displayCutoutPadding().padding(bottom = 23.dp)
+                .onSizeChanged { viewport = it }) {
                 AndroidView(
                     modifier = Modifier.matchParentSize(),
                     factory = { ctx ->
@@ -323,6 +342,16 @@ fun EpubReaderScreen(
                             setBackgroundColor(android.graphics.Color.TRANSPARENT)
                             webChromeClient = WebChromeClient()
                             addJavascriptInterface(object {
+                                @JavascriptInterface fun onNoteTap(sourceChapter: Int, id: String) {
+                                    mainView.post {
+                                        if (sourceChapter == chapterIndex) {
+                                            openNote = annotations.firstOrNull {
+                                                it.id == id && it.chapter == sourceChapter && it.note.isNotBlank()
+                                            }
+                                        }
+                                    }
+                                }
+
                                 @JavascriptInterface fun onReaderTap(sourceChapter: Int, tapCount: Int) {
                                     mainView.post {
                                         if (sourceChapter == chapterIndex && (singleTap || tapCount == 2)) {
@@ -428,8 +457,11 @@ fun EpubReaderScreen(
                 )
 
             }
+            ReaderFooter(Modifier.align(Alignment.BottomCenter), palette, chapterTitles[chapterIndex],
+                if (!scrollMode && reportedChapter == chapterIndex) "${page + 1}/$pageCount" else null,
+                displayProgress)
             if (barsVisible) {
-                Surface(Modifier.align(Alignment.TopCenter).fillMaxWidth().readerEdgeShadow(topBar = true),
+                Surface(Modifier.align(Alignment.TopCenter).displayCutoutPadding().fillMaxWidth().readerEdgeShadow(topBar = true),
                     color = palette.panel, contentColor = foreground) {
                     Row(Modifier.heightIn(min = 52.dp).padding(horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically) {
@@ -449,7 +481,7 @@ fun EpubReaderScreen(
                         }
                     }
                 }
-                Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().readerEdgeShadow(topBar = false),
+                Surface(Modifier.align(Alignment.BottomCenter).padding(bottom = 23.dp).fillMaxWidth().readerEdgeShadow(topBar = false),
                     color = palette.panel, contentColor = foreground) {
                     Column(Modifier.padding(horizontal = 8.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -485,13 +517,13 @@ fun EpubReaderScreen(
             selection?.takeIf { it.chapter == chapterIndex }?.let { selected ->
                 Surface(
                     modifier = Modifier.align(Alignment.BottomCenter)
-                        .padding(bottom = if (barsVisible) 116.dp else 12.dp),
+                        .padding(bottom = if (barsVisible) 139.dp else 31.dp),
                     tonalElevation = 5.dp,
                     shape = MaterialTheme.shapes.medium,
                 ) {
                     Row {
                         TextButton(onClick = {
-                            saveAnnotation(book, selected)
+                            colorPicker = selected
                             selection = null
                             webView?.evaluateJavascript("window.getSelection()?.removeAllRanges()", null)
                         }) { Text("Highlight") }
@@ -576,6 +608,30 @@ fun EpubReaderScreen(
                 onEdit = { target, item -> editingNote = target to item },
                 onDismiss = { showNotes = false },
             )
+        }
+        colorPicker?.let { item ->
+            AlertDialog(onDismissRequest = { colorPicker = null }, title = { Text("Highlight color") },
+                text = {
+                    Column {
+                        listOf("yellow" to 0xFFFFD664, "green" to 0xFFACE4AE,
+                            "blue" to 0xFF9BD9FA, "pink" to 0xFFFFB9D0).forEach { (name, swatch) ->
+                            TextButton(onClick = {
+                                saveAnnotation(book, item.copy(color = name))
+                                colorPicker = null
+                            }) {
+                                Box(Modifier.size(16.dp).background(Color(swatch), MaterialTheme.shapes.small))
+                                Spacer(Modifier.width(10.dp))
+                                Text(name.replaceFirstChar { it.uppercase() })
+                            }
+                        }
+                    }
+                }, confirmButton = { TextButton(onClick = { colorPicker = null }) { Text("Cancel") } })
+        }
+        openNote?.let { item ->
+            AlertDialog(onDismissRequest = { openNote = null }, title = { Text("Note") },
+                text = { Text(item.note, Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) },
+                confirmButton = { TextButton(onClick = { openNote = null }) { Text("Close") } },
+                dismissButton = { TextButton(onClick = { openNote = null; editingNote = book to item }) { Text("Edit") } })
         }
         editingNote?.let { (target, item) ->
             val existing = if (target.id == book.id) annotations else annotationStore.read(target.id)
@@ -825,6 +881,35 @@ private fun ChapterList(
     }
 }
 
+@Composable
+private fun ReaderFooter(modifier: Modifier, palette: ReaderPalette, title: String, page: String?, progress: Float) {
+    val context = LocalContext.current
+    var time by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var battery by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(context) {
+        val manager = context.getSystemService(BatteryManager::class.java)
+        while (true) {
+            time = System.currentTimeMillis()
+            battery = manager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+            delay(60_000L - time % 60_000L)
+        }
+    }
+    val label = MaterialTheme.typography.labelSmall
+    Row(modifier.fillMaxWidth().background(palette.panel).height(23.dp).padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(listOfNotNull(battery.takeIf { it in 0..100 }?.let { "$it%" },
+            DateFormat.getTimeFormat(context).format(java.util.Date(time))).joinToString("  "),
+            color = palette.ink, style = label, maxLines = 1)
+        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center) {
+            Text(title, Modifier.weight(1f, fill = false), color = palette.ink, style = label,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (page != null) Text(" ($page)", color = palette.ink, style = label, maxLines = 1)
+        }
+        Text(String.format(java.util.Locale.getDefault(), "%.1f%%", progress * 100),
+            color = palette.ink, style = label, maxLines = 1)
+    }
+}
+
 private fun loadChapter(webView: WebView, chapter: EpubChapter, html: String = chapterHtml(chapter)) {
     val base = Uri.fromFile(chapter.file).toString()
     webView.loadDataWithBaseURL(base, html, "text/html", "UTF-8", null)
@@ -872,8 +957,12 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  body{box-sizing:border-box!important;margin:24px!important;padding:0!important;overflow:visible!important;color:${'$'}{palettes[mode].fg}!important;background:transparent!important;font-size:${fontScale}em!important;line-height:1.65!important;font-family:serif!important;}
  ::highlight(paperlight-note){background:#ffd664;color:#28231a;}
  ::highlight(paperlight-search){background:#8de7f2;color:#28231a;}
- mark[data-paperlight-note]{background:#ffd664!important;color:#28231a!important;}
- p,li{orphans:2;widows:2;} img,svg,video{max-width:100%!important;max-height:90%!important;object-fit:contain!important;break-inside:avoid!important;} h1,h2,h3,h4{break-after:avoid!important;} a{color:${'$'}{palettes[mode].link}!important;}`;
+ ::highlight(paperlight-green){background:#ace4ae;color:#28231a;}
+ ::highlight(paperlight-blue){background:#9bd9fa;color:#28231a;}
+ ::highlight(paperlight-pink){background:#ffb9d0;color:#28231a;}
+ mark[data-paperlight-note]{color:#28231a!important;}
+ .paperlight-note-marker{position:fixed;z-index:5;width:28px;height:28px;padding:0;border:0;border-radius:50%;background:#52633d;color:white;font-size:16px;line-height:28px;text-align:center;}
+ p,li{orphans:2;widows:2;} img,svg,video{max-width:100%!important;object-fit:contain!important;break-inside:avoid!important;} h1,h2,h3,h4{break-after:avoid!important;} a{color:${'$'}{palettes[mode].link}!important;}`;
  document.head.appendChild(style);
  const darkText=document.createElement('style');
  document.head.appendChild(darkText);
@@ -926,11 +1015,25 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  viewport.appendChild(endSpacer);
  document.body.appendChild(viewport);
  document.body.appendChild(fold);
+ for(const image of content.querySelectorAll?.('img[loading="lazy"]')||[]) image.loading='eager';
  const coverMedia=content.querySelector?.('img,svg');
  const imageOnly=coverMedia&&!content.textContent?.trim()&&content.querySelectorAll('img,svg').length===1;
  if(coverMedia&&(document.querySelector?.('meta[name="calibre:cover"]')||imageOnly)){
    content.classList.add('paperlight-cover');
    coverMedia.classList.add('paperlight-cover-media');
+   if(coverMedia.localName==='img'){
+     function showMissingIllustration(){
+       if(coverMedia.hidden) return;
+       coverMedia.hidden=true;
+       coverMedia.style.setProperty('display','none','important');
+       const message=document.createElement('div');
+       message.className='paperlight-missing-image';
+       message.textContent='Illustration unavailable in this EPUB';
+       content.appendChild(message);
+     }
+     coverMedia.addEventListener('error',showMissingIllustration);
+     if(coverMedia.complete&&!coverMedia.naturalWidth) showMissingIllustration();
+   }
    for(let wrapper=coverMedia.parentElement;wrapper&&wrapper!==content;wrapper=wrapper.parentElement){
      wrapper.classList.add('paperlight-cover-wrapper');
    }
@@ -976,16 +1079,17 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
        font-family:${'$'}{family}!important;line-height:${'$'}{type.lineHeight}!important;${'$'}{alignment}
      }
      .paperlight-content.paperlight-cover{
-       display:grid!important;place-items:center!important;
+       position:relative!important;display:block!important;
        height:${'$'}{contentHeight}px!important;columns:auto!important;overflow:hidden!important;
      }
+     .paperlight-missing-image{position:absolute;inset:0;display:grid;place-items:center;text-align:center;}
      .paperlight-content .paperlight-cover-wrapper{display:contents!important;}
      .paperlight-content .paperlight-cover-media{
-       display:block!important;box-sizing:border-box!important;margin:auto!important;padding:0!important;
+       position:absolute!important;inset:0!important;display:block!important;box-sizing:border-box!important;margin:auto!important;padding:0!important;
        max-width:100%!important;max-height:${'$'}{contentHeight}px!important;
      }
      .paperlight-content img.paperlight-cover-media{width:auto!important;height:auto!important;object-fit:contain!important;}
-     .paperlight-content svg.paperlight-cover-media{width:100%!important;height:100%!important;}
+     .paperlight-content svg.paperlight-cover-media{width:100%!important;height:${'$'}{contentHeight}px!important;}
      .paperlight-content pre{white-space:pre-wrap!important;}
      .paperlight-content table{max-width:100%!important;overflow-wrap:anywhere!important;}
      .paperlight-content img,.paperlight-content svg,.paperlight-content video{
@@ -1022,7 +1126,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  function moveTo(offset,behavior){
    viewport.scrollTo({left:scrolling?0:offset,top:scrolling?offset:0,behavior});
  }
- function report(){if(turning||drag) return; Paperlight.onPage(page(),total(),fraction(),$chapterIndex,scrolling);}
+ function report(){if(turning||drag) return; drawNoteMarkers(); Paperlight.onPage(page(),total(),fraction(),$chapterIndex,scrolling);}
  function restore(progress){
    currentPage=Math.max(0,Math.min(total()-1,Math.round(progress*(total()-1))));
    moveTo(scrolling?progress*maxOffset():currentPage*step(),'instant');
@@ -1072,18 +1176,18 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    if(direction<0 && adjacent>=0){dragScroll=true;moveTo(adjacent*step(),'instant');}
    backPage=copyPage(viewport.scrollLeft);
    backPage.style.zIndex='2';
-   backPage.style.opacity='.88';
+   backPage.style.opacity='.38';
    fold.style.zIndex='3';
  }
  function curlFrame(direction,progress){
    prepareCurl(direction);
    const p=direction>0?progress:1-progress;
    const w=layoutWidth,h=layoutHeight;
-   const edge=w*(1-p), bend=Math.sin(p*Math.PI)*w*.18;
+   const edge=w*(1-p), bend=Math.sin(p*Math.PI)*w*.065;
    const top=edge+bend*.5, bottom=edge-bend*.5;
    const front='M 0 0 L '+top+' 0 Q '+(edge-bend*.45)+' '+h*.5+' '+bottom+' '+h+' L 0 '+h+' Z';
    viewport.style.setProperty('clip-path','path("'+front+'")');
-   const left=edge-bend*1.8;
+   const left=edge-bend*1.2;
    const back='M '+top+' 0 Q '+(edge-bend*.45)+' '+h*.5+' '+bottom+' '+h+' Q '+left+' '+h*.82+' '+left+' '+h*.35+' Q '+left+' '+h*.08+' '+top+' 0 Z';
    // Reflect the printing on the reverse of the sheet and curve its silhouette.
    backPage.style.transformOrigin='0 0';
@@ -1095,6 +1199,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    fold.style.backgroundImage='url("data:image/svg+xml,'+encodeURIComponent(svg)+'")';
  }
  function preview(direction,p,style){
+   if(!dragStyle) clearNoteMarkers();
    dragDirection=direction;drag=p;dragStyle=style;
    if(style==='curl') curlFrame(direction,p);
    else {
@@ -1245,12 +1350,46 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    }
    Paperlight.onSelection($chapterIndex,-1,-1,'');
  });
+ let noteOffsets=[];
+ let noteMarkers=[];
+ const highlightColors={yellow:'#ffd664',green:'#ace4ae',blue:'#9bd9fa',pink:'#ffb9d0'};
+ function clearNoteMarkers(){noteMarkers.forEach(marker=>marker.remove());noteMarkers=[];}
+ function drawNoteMarkers(){
+   clearNoteMarkers();
+   if(!noteOffsets.length) return;
+   const nodes=textNodes();
+   for(const [start,end,color,id] of noteOffsets){
+     const range=makeRange(start,end,nodes);
+     const rect=range&&Array.from(range.getClientRects()).find(box=>
+       box.right>0&&box.left<layoutWidth&&box.bottom>0&&box.top<layoutHeight);
+     if(!rect) continue;
+     const marker=document.createElement('button');
+     marker.className='paperlight-note-marker';
+     marker.type='button';
+     marker.setAttribute('aria-label','Read note');
+     marker.textContent='▤';
+     const y=Math.max(0,Math.min(rect.top,layoutHeight-28));
+     let lane=0;
+     while(noteMarkers.some(other=>parseFloat(other.style.right)===lane*29&&Math.abs(parseFloat(other.style.top)-y)<28)) lane++;
+     marker.style.right=(lane*29)+'px';
+     marker.style.top=y+'px';
+     marker.addEventListener('click',()=>Paperlight.onNoteTap($chapterIndex,id));
+     document.body.appendChild(marker);
+     noteMarkers.push(marker);
+   }
+ }
  window.paperlightHighlights=function(offsets){
+   noteOffsets=offsets.filter(item=>item[4]);
+
    const registry=window.CSS?.highlights;
    if(registry&&window.Highlight){
      const nodes=textNodes();
-     const ranges=offsets.map(([start,end])=>makeRange(start,end,nodes)).filter(Boolean);
-     registry.set('paperlight-note',new Highlight(...ranges));
+     for(const color of Object.keys(highlightColors)){
+       const ranges=offsets.filter(item=>(item[2]||'yellow')===color)
+         .map(([start,end])=>makeRange(start,end,nodes)).filter(Boolean);
+       registry.set(color==='yellow'?'paperlight-note':'paperlight-'+color,new Highlight(...ranges));
+     }
+     drawNoteMarkers();
      return;
    }
    // Older WebViews use inline marks. Unwrap them before recalculating text offsets.
@@ -1260,23 +1399,23 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      parent.normalize();
    }
    for(const {node,start,end} of textNodes()){
-     const boundaries=offsets.map(([a,b])=>[Math.max(0,a-start),Math.min(end-start,b-start)])
-       .filter(([a,b])=>a<b).sort((a,b)=>a[0]-b[0]);
-     const merged=[];
-     for(const [a,b] of boundaries){
-       const last=merged[merged.length-1];
-       if(last&&a<=last[1]) last[1]=Math.max(last[1],b);
-       else merged.push([a,b]);
-     }
-     for(const [a,b] of merged.reverse()){
+     const spans=offsets.map(([a,b,color])=>[Math.max(0,a-start),Math.min(end-start,b-start),color])
+       .filter(([a,b])=>a<b);
+     const edges=[...new Set(spans.flatMap(([a,b])=>[a,b]))].sort((a,b)=>b-a);
+     for(let i=1;i<edges.length;i++){
+       const a=edges[i],b=edges[i-1];
+       const span=spans.find(item=>item[0]<=a&&item[1]>=b);
+       if(!span) continue;
        const range=document.createRange();
        range.setStart(node,a);
        range.setEnd(node,b);
        const mark=document.createElement('mark');
        mark.setAttribute('data-paperlight-note','');
+       mark.style.setProperty('background-color',highlightColors[span[2]]||highlightColors.yellow,'important');
        range.surroundContents(mark);
      }
    }
+   drawNoteMarkers();
  };
  window.paperlightShowRange=function(start,end){
    const range=makeRange(start,end,textNodes());
@@ -1365,7 +1504,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    const touch=event.touches.length===1?event.touches[0]:null;
    touchStart=touch?{x:touch.clientX,y:touch.clientY,time:performance.now()}:null;
  },{passive:true});
- window.addEventListener('touchcancel',()=>{touchStart=null;previousTap=null;resetDrag();},{passive:true});
+ window.addEventListener('touchcancel',()=>{touchStart=null;previousTap=null;resetDrag();report();},{passive:true});
  window.addEventListener('touchmove',event=>{
    if(!touchStart||scrolling||turning||event.touches.length!==1||window.getSelection()?.toString()){
      resetDrag();
@@ -1475,6 +1614,13 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    reportTimer=setTimeout(report,120);
  });
  restore($initialFraction);
+ // Image dimensions can arrive after the first pagination pass.
+ content.addEventListener('load',event=>{
+   if(scrolling||turning||drag||!event.target?.matches?.('img,image,video')) return;
+   measurePages();
+   moveTo(currentPage*step(),'instant');
+   report();
+ },true);
  if($entryDirection&&!scrolling&&!reducedMotion()) animateEntry($entryDirection);
 })();
 """.trimIndent()

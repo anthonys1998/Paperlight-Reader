@@ -11,6 +11,7 @@ data class ReaderAnnotation(
     val end: Int,
     val quote: String,
     val note: String,
+    val color: String = "yellow",
 )
 
 class ReaderAnnotationStore(context: Context) {
@@ -21,7 +22,7 @@ class ReaderAnnotationStore(context: Context) {
         List(array.length()) { index ->
             val item = array.getJSONObject(index)
             ReaderAnnotation(item.getString("id"), item.getInt("chapter"), item.getInt("start"),
-                item.getInt("end"), item.getString("quote"), item.getString("note"))
+                item.getInt("end"), item.getString("quote"), item.getString("note"), item.optString("color", "yellow"))
         }
     }.getOrDefault(emptyList())
 
@@ -31,7 +32,7 @@ class ReaderAnnotationStore(context: Context) {
         else editor.putString(bookId, JSONArray().apply {
             annotations.forEach { item ->
                 put(JSONObject().put("id", item.id).put("chapter", item.chapter)
-                    .put("start", item.start).put("end", item.end).put("quote", item.quote).put("note", item.note))
+                    .put("start", item.start).put("end", item.end).put("quote", item.quote).put("note", item.note).put("color", item.color))
             }
         }.toString())
         editor.apply()

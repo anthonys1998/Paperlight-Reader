@@ -93,7 +93,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     val opened = books.find { it.id == selectedId }
     if (opened?.format == "EPUB") {
         BackHandler { selectedId = null }
-        Box(Modifier.fillMaxSize().displayCutoutPadding()) {
+        Box(Modifier.fillMaxSize()) {
             EpubReaderScreen(
                 book = opened,
                 onBack = { selectedId = null },
