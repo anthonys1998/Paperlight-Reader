@@ -28,6 +28,26 @@ internal object BookArtwork {
         return image
     }
 
+    fun metadata(file: File): Pair<String, String>? = runCatching {
+        ZipFile(file).use { zip ->
+            var opf: String? = null
+            readTags(zip, "META-INF/container.xml") {
+                if (name == "rootfile" && opf == null) opf = getAttributeValue(null, "full-path")
+            }
+            var title = ""
+            val authors = mutableListOf<String>()
+            readTags(zip, opf ?: return@use null) {
+                if (namespace?.contains("purl.org/dc/elements") == true) {
+                    when (name) {
+                        "title" -> if (title.isBlank()) title = nextText().trim()
+                        "creator" -> nextText().trim().takeIf { it.isNotBlank() }?.let(authors::add)
+                    }
+                }
+            }
+            title to authors.joinToString(", ")
+        }
+    }.getOrNull()
+
     private fun epubCover(file: File): Bitmap? = ZipFile(file).use { zip ->
         var packagePath: String? = null
         readTags(zip, "META-INF/container.xml") {

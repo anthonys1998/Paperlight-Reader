@@ -181,7 +181,7 @@ internal fun ReaderNotesDialog(
                         if (otherBook != null) {
                             if (otherNotes.isEmpty()) item { Text("No highlights or notes in this book.") }
                             items(otherNotes.sortedWith(order), key = { "other:${it.id}" }) { annotation ->
-                                AnnotationCard(annotation, "Section ${annotation.chapter + 1}", palette,
+                                AnnotationCard(annotation, "${if (otherBook.format in setOf("PDF", "CBZ", "CBR")) "Page" else "Section"} ${annotation.chapter + 1}", palette,
                                     onOpen = null, onEdit = { onEdit(otherBook, annotation) })
                             }
                         }
@@ -200,7 +200,13 @@ private fun AnnotationCard(
     onOpen: (() -> Unit)?,
     onEdit: () -> Unit,
 ) {
-    val tint = MaterialTheme.colorScheme.secondaryContainer
+    val highlight = when (annotation.color) {
+        "green" -> androidx.compose.ui.graphics.Color(0xFF87C79A)
+        "blue" -> androidx.compose.ui.graphics.Color(0xFF94BFE3)
+        "pink" -> androidx.compose.ui.graphics.Color(0xFFE7A7B7)
+        else -> androidx.compose.ui.graphics.Color(0xFFE9D079)
+    }
+    val tint = androidx.compose.ui.graphics.lerp(palette.panel, highlight, .32f)
     OutlinedCard(colors = CardDefaults.outlinedCardColors(containerColor = palette.panel, contentColor = palette.ink)) {
         Column(Modifier.padding(start = 14.dp, end = 8.dp, bottom = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

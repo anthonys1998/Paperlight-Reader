@@ -32,3 +32,18 @@ internal fun renderPdfPage(path: String, position: Float, pixelWidth: Int): Rend
         }
     }
 }
+
+/** Text extraction is provided by the platform on Android 15 and newer. */
+@androidx.annotation.RequiresApi(35)
+internal fun readPdfPageText(path: String, index: Int): String {
+    val descriptor = ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY)
+    val renderer = try { PdfRenderer(descriptor) } catch (failure: Exception) {
+        descriptor.close()
+        throw failure
+    }
+    return renderer.use { pdf ->
+        pdf.openPage(index.coerceIn(0, pdf.pageCount - 1)).use { page ->
+            page.textContents.joinToString("\n") { it.text }
+        }
+    }
+}

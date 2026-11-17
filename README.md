@@ -2,7 +2,19 @@
 
 Paperlight is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.10.6-dev
+## Current milestone: 0.11.0-dev
+
+### Changes in this milestone
+- Shelf rows contain exactly three equal-sized covers. Each row owns its backdrop and bottom plank and scrolls as one layout item.
+- The hamburger menu provides named libraries, import, recursive folder scanning, EPUB creation, reading statistics and local backup/restore.
+- Create, rename and delete libraries. Long-press books for multiple selection, then move or delete them. A successful move opens its destination library.
+- Sort by recent, title, author, progress or import date. Switch between shelves and a metadata list, and filter unread, reading or finished books.
+- Imported EPUB metadata supplies title and author. Older EPUB entries with missing author metadata are refreshed.
+- PDF/comic controls include hidden menus, page notes, bookmarks, jump-to-page, fit-to-width, fit-to-screen and continuous scrolling. Android 15+ also provides PDF page-text selection and page-linked highlights.
+- Local backup includes original books, library membership, progress, notes and bookmarks. Restore adds missing book IDs and preserves books already present. Reader appearance, custom fonts and reading statistics are device settings and are not included in this backup format.
+- Reading time counts only while the book screen is active and the app is resumed. Historical reading time is unavailable for earlier versions.
+- EPUB creation displays chapter progress and can be cancelled.
+- Turning page sheets stay opaque.
 
 ### Implemented in this source snapshot
 - Native Jetpack Compose bookshelf with equal-sized covers, title search, a last-read marker, warm light and dark palettes, and per-book progress.
@@ -35,7 +47,7 @@ Paperlight is an offline-first Android ebook reader project. Imported files are 
 
 ### Not implemented yet
 - Full fixed-layout EPUB rendering and a physically modeled page curl. The current turn uses a finger-tracked diagonal corner fold with shading.
-- Collections, reading statistics, backup/export and accessibility polish.
+- Broader accessibility and unusual-publication compatibility need device validation.
 
 ## Build
 
@@ -47,8 +59,8 @@ This source snapshot has not been compiled or device-tested in this environment.
 
 - Imported books are stored under the app's private files directory.
 - Removing a book deletes its imported file and EPUB extraction cache.
-- Uninstalling the app removes app-private imports. Add backup/export before relying on the app as the only copy of a library.
-- The app does not request the INTERNET permission.
+- Uninstalling the app removes app-private imports. Export a local backup from the hamburger menu to retain books and annotations.
+- Internet access is used only for user-requested website-to-EPUB downloads. Core reading and library management work locally.
 
 ## Build an APK on GitHub
 

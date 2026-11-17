@@ -1,3 +1,17 @@
+## 0.11.0-dev
+- Replaced the stationary bookshelf backdrop with scrollable three-book shelf rows and a dedicated shelf-row image.
+- Added a hamburger library drawer, library counts, list view, sorting and reading-status filters.
+- Library creation and moves now wait for database success and open the destination. Added rename/delete, duplicate-name feedback and direct import into the active library.
+- Added EPUB metadata import and refresh for existing books with missing authors.
+- Set page-turn sheets and chapter snapshots to full opacity.
+- Added PDF/comic page notes, bookmarks, jump-to-page, fit controls, continuous scrolling and shared immersive controls.
+- Added PDF page-text selection and page-linked highlights on Android 15+.
+- Added portable local backup/restore of original book files, libraries, progress, notes and bookmarks. Restore adds missing books and skips existing IDs.
+- Added active reading-time statistics and web-novel download progress/cancellation.
+- Completed warm library palettes to remove the default purple component colors.
+- Note summarization remains deferred.
+- Source syntax reviewed. This version has not been APK-compiled or device-tested in this environment.
+
 ## 0.10.8-dev
 - Make the bookshelf artwork the library's full-screen background and keep cover shadows visible over the shelves.
 - Add named libraries, per-library filtering, long-press multi-selection, bulk move and bulk delete.

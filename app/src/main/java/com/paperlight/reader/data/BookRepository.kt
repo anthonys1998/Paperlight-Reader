@@ -30,14 +30,29 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
         }
     }
 
-    suspend fun createLibrary(name: String): Result<LibraryEntity> = withContext(Dispatchers.IO) {
-        runCatching {
+    suspend fun saveLibrary(id: String?, name: String): Result<LibraryEntity> = withContext(Dispatchers.IO) {
+        try {
             val cleanName = name.trim().take(60)
             require(cleanName.isNotBlank()) { "Enter a name for this library." }
-            val library = LibraryEntity(UUID.randomUUID().toString(), cleanName)
-            dao.insertLibrary(library)
-            library
+            require(dao.libraryNameCount(cleanName, id.orEmpty()) == 0) { "A library with this name already exists." }
+            val library = if (id == null) {
+                LibraryEntity(UUID.randomUUID().toString(), cleanName).also { dao.insertLibrary(it) }
+            } else {
+                val existing = requireNotNull(dao.findLibrary(id)) { "This library no longer exists." }
+                dao.renameLibrary(id, cleanName)
+                existing.copy(name = cleanName)
+            }
+            Result.success(library)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Result.failure(failure)
         }
+    }
+
+    suspend fun deleteLibrary(id: String) = withContext(Dispatchers.IO) {
+        ensureDefaultLibrary()
+        dao.deleteLibrary(id)
     }
 
     suspend fun moveBooks(ids: List<String>, libraryId: String) = withContext(Dispatchers.IO) {
@@ -59,29 +74,37 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
                 require(dao.findLibrary(libraryId) != null) { "That library no longer exists." }
                 val id = UUID.randomUUID().toString()
                 val destination = File(File(context.filesDir, "books").apply { mkdirs() }, "$id.epub")
-                file.copyTo(destination, overwrite = false)
-                file.delete()
-                BookEntity(
-                    id = id,
-                    title = title.ifBlank { file.nameWithoutExtension },
-                    author = author,
-                    fileName = "${title.ifBlank { file.nameWithoutExtension }}.epub",
-                    localPath = destination.absolutePath,
-                    format = "EPUB",
-                    importedAt = System.currentTimeMillis(),
-                    libraryId = libraryId
-                ).also { dao.upsert(it) }
+                try {
+                    file.copyTo(destination, overwrite = false)
+                    BookEntity(
+                        id = id,
+                        title = title.ifBlank { file.nameWithoutExtension },
+                        author = author,
+                        fileName = "${title.ifBlank { file.nameWithoutExtension }}.epub",
+                        localPath = destination.absolutePath,
+                        format = "EPUB",
+                        importedAt = System.currentTimeMillis(),
+                        libraryId = libraryId
+                    ).also {
+                        dao.insertBook(it)
+                        file.delete()
+                    }
+                } catch (failure: Exception) {
+                    destination.delete()
+                    throw failure
+                }
             }
         }
 
     suspend fun createEpubFromUrl(
         url: String,
         options: WebNovelScrapeOptions = WebNovelScrapeOptions(),
-        libraryId: String = "default"
+        libraryId: String = "default",
+        onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }
     ): Result<BookEntity> {
         val tempFile = File(context.cacheDir, "webnovel-${UUID.randomUUID()}.epub")
         return try {
-            val generated = WebNovelEpubUtility().createEpub(url, tempFile, options)
+            val generated = WebNovelEpubUtility().createEpub(url, tempFile, options, onProgress)
             importGeneratedEpub(generated.file, generated.title, libraryId = libraryId)
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -92,8 +115,10 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
         }
     }
 
-    suspend fun import(uri: Uri): Result<BookEntity> = withContext(Dispatchers.IO) {
+    suspend fun import(uri: Uri, libraryId: String = "default"): Result<BookEntity> = withContext(Dispatchers.IO) {
         runCatching {
+            ensureDefaultLibrary()
+            require(dao.findLibrary(libraryId) != null) { "This library no longer exists." }
             val resolver = context.contentResolver
             val displayName = resolver.query(uri, null, null, null, null)?.use { cursor ->
                 val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -104,20 +129,38 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
             val id = UUID.randomUUID().toString()
             val booksDir = File(context.filesDir, "books").apply { mkdirs() }
             val destination = File(booksDir, "$id.$extension")
-            resolver.openInputStream(uri)?.use { input ->
-                destination.outputStream().use { output -> input.copyTo(output) }
-            } ?: error("Unable to read selected file")
-            val book = BookEntity(
-                id = id,
-                title = displayName.substringBeforeLast('.', displayName),
-                fileName = displayName,
-                localPath = destination.absolutePath,
-                format = format,
-                importedAt = System.currentTimeMillis(),
-                libraryId = "default"
-            )
-            dao.upsert(book)
-            book
+            try {
+                resolver.openInputStream(uri)?.use { input ->
+                    destination.outputStream().use { output -> input.copyTo(output) }
+                } ?: error("Unable to read selected file")
+                val metadata = if (format == "EPUB") BookArtwork.metadata(destination) else null
+                val book = BookEntity(
+                    id = id,
+                    title = metadata?.first?.takeIf { it.isNotBlank() } ?: displayName.substringBeforeLast('.', displayName),
+                    author = metadata?.second.orEmpty(),
+                    fileName = displayName,
+                    localPath = destination.absolutePath,
+                    format = format,
+                    importedAt = System.currentTimeMillis(),
+                    libraryId = libraryId
+                )
+                dao.insertBook(book)
+                book
+            } catch (failure: Exception) {
+                destination.delete()
+                throw failure
+            }
+        }
+    }
+
+    suspend fun exportBackup(uri: Uri) = LibraryBackup(context, dao).export(uri)
+    suspend fun restoreBackup(uri: Uri): Int = LibraryBackup(context, dao).restore(uri)
+
+    suspend fun refreshMetadata() = withContext(Dispatchers.IO) {
+        dao.allBooks().filter { it.format == "EPUB" && it.author.isBlank() }.forEach { book ->
+            BookArtwork.metadata(File(book.localPath))?.let { (title, author) ->
+                if (title.isNotBlank() || author.isNotBlank()) dao.updateMetadata(book.id, title.ifBlank { book.title }, author)
+            }
         }
     }
 
@@ -132,9 +175,9 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
 
     suspend fun removeBooks(ids: List<String>) = withContext(Dispatchers.IO) {
         if (ids.isEmpty()) return@withContext
-        val selected = dao.booksByIds(ids.distinct())
+        val selected = ids.distinct().chunked(500).flatMap { dao.booksByIds(it) }
         removeFilesAndState(selected)
-        dao.deleteBooks(selected.map { it.id })
+        selected.map { it.id }.chunked(500).forEach { dao.deleteBooks(it) }
     }
 
     private fun removeFilesAndState(selected: List<BookEntity>) {

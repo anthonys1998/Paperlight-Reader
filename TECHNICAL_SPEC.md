@@ -29,7 +29,7 @@ An Android-only, local-first ebook reader intended to approach the core reading 
 This is a deliberately limited first reader implementation. It does not yet implement every EPUB edge case (for example, encrypted resources, complex scripted publications, all navigation-document variants or robust handling of unusual URL-encoded resource paths). Publisher CSS is overridden for the initial page layout, which can affect books with intricate fixed-layout or custom styling.
 
 ## Page-turn animation decision
-The current implementation uses smooth horizontal movement and is not a realistic page curl. The Readium Kotlin 3.2.0 release added animated page turns for paginated EPUB navigation, and should be evaluated for the production navigator rather than attempting to hand-roll a fragile 3D effect. Readium's navigator is a Fragment-based integration in the stable API; its newer Compose navigators are documented as experimental. Reference: https://readium.org/kotlin-toolkit/3.2.0/guides/navigator/navigator/ and https://blog.readium.org/release-note-kotlin-toolkit-version-3-2-0/.
+The current implementation uses finger-tracked horizontal movement or a diagonal corner-fold animation with opaque page sheets. The Readium Kotlin 3.2.0 release added animated page turns for paginated EPUB navigation, and should be evaluated for the production navigator rather than attempting to hand-roll a fragile 3D effect. Readium's navigator is a Fragment-based integration in the stable API; its newer Compose navigators are documented as experimental. Reference: https://readium.org/kotlin-toolkit/3.2.0/guides/navigator/navigator/ and https://blog.readium.org/release-note-kotlin-toolkit-version-3-2-0/.
 
 ## Format roadmap
 - EPUB: initial implementation present; harden parser, add TOC, bookmarks, annotations and proper navigator/animation.
@@ -43,7 +43,7 @@ The current implementation uses smooth horizontal movement and is not a realisti
 - Room stores book metadata and coarse progress.
 - Imported files and EPUB extraction cache live in app-private storage.
 - Backup/export is required before the app can be considered safe as a sole library manager.
-- No INTERNET permission is requested in the manifest.
+- Internet access is requested for user-initiated website-to-EPUB downloads. Core reading remains local.
 
 ## Current technical baseline
 - minSdk 26

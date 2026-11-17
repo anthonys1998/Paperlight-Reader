@@ -20,7 +20,7 @@ data class WebNovelScrapeOptions(
     val chapterContentSelector: String = ".chapter-content, .chapter-body, #chapter-content, .read-content, .entry-content, article, main, #content",
     val chapterTitleSelector: String = "h1, h2",
     val removeSelector: String = "script, style, noscript, nav, header, footer, aside, .ads, .advertisement, .share, .comments",
-    val maxChapters: Int = 400,
+    val maxChapters: Int = 2_000,
     val requestDelayMillis: Long = 500L
 )
 
@@ -31,14 +31,16 @@ class WebNovelEpubUtility {
     suspend fun createEpub(
         tableOfContentsUrl: String,
         destination: File,
-        options: WebNovelScrapeOptions = WebNovelScrapeOptions()
+        options: WebNovelScrapeOptions = WebNovelScrapeOptions(),
+        onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }
     ): WebNovelEpubResult = withContext(Dispatchers.IO) {
         val start = validateHttpUrl(tableOfContentsUrl)
-        require(options.maxChapters in 1..2_000) { "Chapter limit must be between 1 and 2,000." }
+        require(options.maxChapters in 1..9_000) { "Chapter limit must be between 1 and 9,000." }
         require(options.requestDelayMillis in 0L..10_000L) { "Request delay must be between 0 and 10 seconds." }
 
         var completed = false
         try {
+            onProgress(0, 0, "Finding chapters…")
             val toc = fetch(start.toString())
             val resolvedTocUri = validateHttpUrl(toc.baseUri())
             val links = extractChapterLinks(toc, resolvedTocUri, options.chapterLinkSelector, options.maxChapters)
@@ -52,6 +54,8 @@ class WebNovelEpubUtility {
                 ?: toc.title().trim().ifBlank { start.host }
 
             val epub = Book().apply { metadata.addTitle(title) }
+            onProgress(0, links.size, title)
+            var totalTextBytes = 0L
             links.forEachIndexed { index, (url, linkLabel) ->
                 coroutineContext.ensureActive()
                 if (index > 0 && options.requestDelayMillis > 0L) delay(options.requestDelayMillis)
@@ -62,13 +66,21 @@ class WebNovelEpubUtility {
                     ?.takeIf(String::isNotBlank)
                     ?: linkLabel
                     ?: "Chapter ${index + 1}"
-                val paragraphs = extractParagraphs(content)
+                val paragraphs = extractParagraphs(content).let { paragraphs ->
+                    if (paragraphs.firstOrNull() == chapterTitle) paragraphs.drop(1) else paragraphs
+                }
                 require(paragraphs.isNotEmpty()) { "No readable text found in $chapterTitle ($url)." }
                 val xhtml = chapterXhtml(chapterTitle, paragraphs)
-                val resource = Resource(ByteArrayInputStream(xhtml.toByteArray(Charsets.UTF_8)), "chapter-${(index + 1).toString().padStart(4, '0')}.xhtml")
+                val bytes = xhtml.toByteArray(Charsets.UTF_8)
+                totalTextBytes += bytes.size
+                require(totalTextBytes <= 64L * 1024 * 1024) { "This novel is too large to generate on this device in one EPUB." }
+                val resource = Resource(ByteArrayInputStream(bytes), "chapter-${(index + 1).toString().padStart(4, '0')}.xhtml")
                 epub.addSection(chapterTitle, resource)
+                onProgress(index + 1, links.size, chapterTitle)
             }
 
+            coroutineContext.ensureActive()
+            onProgress(links.size, links.size, "Writing EPUB…")
             destination.parentFile?.mkdirs()
             destination.outputStream().buffered().use { output -> EpubWriter().write(epub, output) }
             require(destination.isFile && destination.length() > 0L) { "The EPUB writer produced an empty file." }
@@ -104,7 +116,9 @@ class WebNovelEpubUtility {
 
         val chapterHint = Regex("chapter|chap\\.?|episode|ep\\.?|part|volume|第.{0,8}[章話回卷]", RegexOption.IGNORE_CASE)
         val hinted = candidates.filter { (url, label) -> chapterHint.containsMatchIn(label.orEmpty()) || chapterHint.containsMatchIn(url) }
-        return (hinted.ifEmpty { candidates }).take(limit)
+        val chapters = hinted.ifEmpty { candidates }
+        require(chapters.size <= limit) { "Found ${chapters.size} chapters. Increase the chapter limit in advanced options to download them all." }
+        return chapters
     }
 
     private fun selectContent(document: Document, selectors: String): Element {

@@ -20,7 +20,8 @@ import com.paperlight.reader.data.BookArtwork
 import com.paperlight.reader.ui.reader.ImagePageReaderScreen
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
@@ -34,6 +35,16 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.Sort
+import androidx.compose.material.icons.rounded.ViewList
+import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.SelectAll
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.LibraryBooks
+import androidx.compose.material.icons.rounded.Backup
+import androidx.compose.material.icons.rounded.Restore
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -53,6 +64,10 @@ import com.paperlight.reader.webnovel.WebNovelScrapeOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.Role
 
 private data class FolderBook(val uri: Uri, val name: String)
 
@@ -61,6 +76,7 @@ private data class FolderBook(val uri: Uri, val name: String)
 fun PaperlightApp(viewModel: LibraryViewModel) {
     val books by viewModel.books.collectAsState()
     val libraries by viewModel.libraries.collectAsState()
+    val downloadProgress by viewModel.downloadProgress.collectAsState()
     val message by viewModel.message.collectAsState()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -69,6 +85,19 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     var searchVisible by rememberSaveable { mutableStateOf(false) }
     var selectedBooks by remember { mutableStateOf(setOf<String>()) }
     var activeLibraryId by rememberSaveable { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val libraryPreferences = remember { context.getSharedPreferences("libraryAppearance", 0) }
+    var listView by rememberSaveable { mutableStateOf(libraryPreferences.getBoolean("listView", false)) }
+    var sortOrder by rememberSaveable { mutableStateOf(libraryPreferences.getString("sortOrder", "Recent") ?: "Recent") }
+    var showSort by remember { mutableStateOf(false) }
+    var filter by rememberSaveable { mutableStateOf("All") }
+    var editingLibraryId by remember { mutableStateOf<String?>(null) }
+    var deletingLibraryId by remember { mutableStateOf<String?>(null) }
+    val libraryBusy by viewModel.libraryBusy.collectAsState()
+    var libraryError by remember { mutableStateOf<String?>(null) }
+    var showStatistics by remember { mutableStateOf(false) }
+    var pendingRestore by remember { mutableStateOf<Uri?>(null) }
     var showMoreActions by remember { mutableStateOf(false) }
     var showCreateLibrary by remember { mutableStateOf(false) }
     var libraryName by remember { mutableStateOf("") }
@@ -76,6 +105,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     var showDeleteBooks by remember { mutableStateOf(false) }
     var showCreateFromWeb by remember { mutableStateOf(false) }
     var novelUrl by remember { mutableStateOf("") }
+    var chapterLimit by rememberSaveable { mutableStateOf("2000") }
     var chapterLinkSelector by remember { mutableStateOf("a[href]") }
     var chapterContentSelector by remember { mutableStateOf(".chapter-content, .chapter-body, #chapter-content, .read-content, .entry-content, article, main, #content") }
     var showScrapeOptions by remember { mutableStateOf(false) }
@@ -83,8 +113,12 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     var candidates by remember { mutableStateOf<List<FolderBook>?>(null) }
     var checked by remember { mutableStateOf(setOf<Uri>()) }
 
+    val exportBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        uri?.let { viewModel.backup(it, restore = false) }
+    }
+    val restoreBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> pendingRestore = uri }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        uris.forEach(viewModel::import)
+        uris.forEach { viewModel.import(it, activeLibraryId ?: "default") }
     }
     val scan = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { folder = it }
 
@@ -138,6 +172,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     }
 
     val opened = books.find { it.id == selectedId }
+    if (opened != null) TrackReadingTime(opened.id)
     if (opened != null && opened.format in setOf("PDF", "CBZ", "CBR")) {
         BackHandler { selectedId = null }
         ImagePageReaderScreen(opened, onBack = { selectedId = null },
@@ -159,42 +194,134 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
         return
     }
 
+    val libraryView = androidx.compose.ui.platform.LocalView.current
+    val libraryDark = androidx.compose.foundation.isSystemInDarkTheme()
+    SideEffect {
+        val activity = generateSequence(context) { (it as? android.content.ContextWrapper)?.baseContext }
+            .filterIsInstance<android.app.Activity>().firstOrNull()
+        activity?.let {
+            androidx.core.view.WindowCompat.getInsetsController(it.window, libraryView).apply {
+                isAppearanceLightStatusBars = false
+                isAppearanceLightNavigationBars = !libraryDark
+            }
+        }
+    }
     val latest = books.firstOrNull { it.lastOpenedAt != null }?.id
     val filtered = books.filter { book ->
         (activeLibraryId == null || book.libraryId == activeLibraryId) &&
+            (when (filter) {
+                "Reading" -> book.progress > 0f && book.progress < .999f
+                "Finished" -> book.progress >= .999f
+                "Unread" -> book.progress == 0f
+                else -> true
+            }) &&
             (book.title.contains(search, ignoreCase = true) || book.author.contains(search, ignoreCase = true))
+    }.let { matches ->
+        when (sortOrder) {
+            "Title" -> matches.sortedBy { it.title.lowercase(java.util.Locale.ROOT) }
+            "Author" -> matches.sortedWith(compareBy<BookEntity> { it.author.lowercase(java.util.Locale.ROOT) }.thenBy { it.title })
+            "Progress" -> matches.sortedByDescending { it.progress }
+            "Imported" -> matches.sortedByDescending { it.importedAt }
+            else -> matches
+        }
     }
-    Box(Modifier.fillMaxSize()) {
-      Image(
-          painter = painterResource(com.paperlight.reader.R.drawable.library_bookshelf),
-          contentDescription = null,
-          contentScale = ContentScale.Crop,
-          modifier = Modifier.fillMaxSize()
-      )
-      Box(Modifier.fillMaxSize().background(
-          Brush.verticalGradient(listOf(Color(0x220D0906), Color.Transparent, Color(0x330D0906)))
-      ))
+    val activeLibrary = libraries.find { it.id == activeLibraryId }
+    val title = activeLibrary?.name ?: "All books"
+    BackHandler(selectedBooks.isNotEmpty()) { selectedBooks = emptySet() }
+    ModalNavigationDrawer(
+        drawerState = drawer,
+        drawerContent = {
+            ModalDrawerSheet(Modifier.widthIn(max = 320.dp)) {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Paperlight", Modifier.padding(24.dp), fontFamily = FontFamily.Serif,
+                    style = MaterialTheme.typography.headlineMedium)
+                NavigationDrawerItem(label = { Text("All books") }, selected = activeLibraryId == null,
+                    icon = { Icon(Icons.Rounded.LibraryBooks, null) }, badge = { Text("${books.size}") },
+                    onClick = { activeLibraryId = null; selectedBooks = emptySet(); scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
+                Text("Libraries", Modifier.padding(start = 28.dp, top = 24.dp, bottom = 8.dp),
+                    style = MaterialTheme.typography.labelLarge)
+                libraries.forEach { library ->
+                        NavigationDrawerItem(label = { Text(library.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            selected = activeLibraryId == library.id,
+                            icon = { Icon(Icons.Rounded.MenuBook, null) },
+                            badge = { Text("${books.count { it.libraryId == library.id }}") },
+                            onClick = { activeLibraryId = library.id; selectedBooks = emptySet(); scope.launch { drawer.close() } },
+                            modifier = Modifier.padding(horizontal = 12.dp))
+                }
+                NavigationDrawerItem(label = { Text("New library") }, selected = false,
+                    icon = { Icon(Icons.Rounded.CreateNewFolder, null) },
+                    onClick = { libraryName = ""; libraryError = null; editingLibraryId = null; showCreateLibrary = true; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
+                HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                NavigationDrawerItem(label = { Text("Import books") }, selected = false,
+                    icon = { Icon(Icons.Rounded.Add, null) }, onClick = { import.launch(arrayOf("*/*")); scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Scan folder") }, selected = false,
+                    icon = { Icon(Icons.Rounded.FolderOpen, null) }, onClick = { scan.launch(null); scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Create EPUB from website") }, selected = false,
+                    icon = { Icon(Icons.Rounded.Link, null) }, onClick = { showCreateFromWeb = true; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
+                HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                NavigationDrawerItem(label = { Text("Reading statistics") }, selected = false,
+                    icon = { Icon(Icons.Rounded.BarChart, null) }, onClick = { showStatistics = true; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Export backup") }, selected = false,
+                    icon = { Icon(Icons.Rounded.Backup, null) }, onClick = {
+                        if (!libraryBusy) exportBackup.launch("Paperlight-backup.zip")
+                        scope.launch { drawer.close() }
+                    }, modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Restore backup") }, selected = false,
+                    icon = { Icon(Icons.Rounded.Restore, null) }, onClick = {
+                        if (!libraryBusy) restoreBackup.launch(arrayOf("application/zip", "application/octet-stream"))
+                        scope.launch { drawer.close() }
+                    }, modifier = Modifier.padding(horizontal = 12.dp))
+                Spacer(Modifier.height(16.dp))
+                }
+            }
+        }
+    ) {
       Scaffold(
-        containerColor = Color.Transparent,
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text(if (selectedBooks.isEmpty()) "My Library" else "${selectedBooks.size} selected", fontFamily = FontFamily.Serif) },
+                title = { Text(if (selectedBooks.isEmpty()) title else "${selectedBooks.size} selected",
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Serif) },
+                navigationIcon = {
+                    IconButton(onClick = { if (selectedBooks.isEmpty()) scope.launch { drawer.open() } else selectedBooks = emptySet() }) {
+                        Icon(if (selectedBooks.isEmpty()) Icons.Rounded.Menu else Icons.Rounded.Close,
+                            if (selectedBooks.isEmpty()) "Open library menu" else "Clear selection")
+                    }
+                },
                 actions = {
                     if (selectedBooks.isNotEmpty()) {
                         IconButton(onClick = { showMoveBooks = true }) { Icon(Icons.Rounded.DriveFileMove, "Move selected books") }
                         IconButton(onClick = { showDeleteBooks = true }) { Icon(Icons.Rounded.Delete, "Delete selected books") }
-                        IconButton(onClick = { selectedBooks = emptySet() }) { Icon(Icons.Rounded.Close, "Clear selection") }
+                        IconButton(onClick = { selectedBooks = filtered.map { it.id }.toSet() }) { Icon(Icons.Rounded.SelectAll, "Select all visible books") }
                     } else {
                         IconButton(onClick = { searchVisible = !searchVisible; if (!searchVisible) search = "" }) {
                             Icon(if (searchVisible) Icons.Rounded.Close else Icons.Rounded.Search, "Search books")
                         }
+                        Box {
                         IconButton(onClick = { showMoreActions = true }) { Icon(Icons.Rounded.MoreVert, "More library actions") }
                         DropdownMenu(expanded = showMoreActions, onDismissRequest = { showMoreActions = false }) {
                             DropdownMenuItem(
                                 text = { Text("Create library") },
                                 leadingIcon = { Icon(Icons.Rounded.CreateNewFolder, null) },
-                                onClick = { showMoreActions = false; libraryName = ""; showCreateLibrary = true }
+                                onClick = { showMoreActions = false; libraryName = ""; libraryError = null; editingLibraryId = null; showCreateLibrary = true }
                             )
+                            if (activeLibrary != null) {
+                                DropdownMenuItem(text = { Text("Rename library") },
+                                    leadingIcon = { Icon(Icons.Rounded.Edit, null) },
+                                    onClick = { showMoreActions = false; editingLibraryId = activeLibrary.id; libraryName = activeLibrary.name; libraryError = null; showCreateLibrary = true })
+                                if (activeLibrary.id != "default") DropdownMenuItem(text = { Text("Delete library") },
+                                    leadingIcon = { Icon(Icons.Rounded.Delete, null) },
+                                    onClick = { showMoreActions = false; deletingLibraryId = activeLibrary.id })
+                            }
+                            DropdownMenuItem(text = { Text("Select books") },
+                                leadingIcon = { Icon(Icons.Rounded.SelectAll, null) }, enabled = filtered.isNotEmpty(),
+                                onClick = { showMoreActions = false; selectedBooks = filtered.map { it.id }.toSet() })
                             DropdownMenuItem(
                                 text = { Text("Create EPUB from website") },
                                 leadingIcon = { Icon(Icons.Rounded.Link, null) },
@@ -213,9 +340,11 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                             )
                         }
                     }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xE92E241E),
+                    containerColor = Color(0xFF302820),
+                    navigationIconContentColor = Color(0xFFFFF4E3),
                     titleContentColor = Color(0xFFFFF4E3),
                     actionIconContentColor = Color(0xFFFFF4E3)
                 )
@@ -224,52 +353,76 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = { Spacer(Modifier.navigationBarsPadding()) }
       ) { padding ->
-          Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp)) {
-            if (searchVisible) OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
-                label = { Text("Search your library") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            androidx.compose.foundation.lazy.LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(vertical = 8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                item {
-                    FilterChip(selected = activeLibraryId == null, onClick = { activeLibraryId = null }, label = { Text("All books") })
+          Column(Modifier.fillMaxSize().padding(padding)) {
+            if (libraryBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            downloadProgress?.let { progress ->
+                Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(progress.label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                                if (progress.total > 0) Text("${progress.completed} / ${progress.total} chapters", style = MaterialTheme.typography.labelSmall)
+                            }
+                            IconButton(onClick = viewModel::cancelDownload) { Icon(Icons.Rounded.Close, "Cancel EPUB download") }
+                        }
+                        if (progress.total > 0) LinearProgressIndicator(progress = { progress.completed.toFloat() / progress.total }, modifier = Modifier.fillMaxWidth())
+                        else LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
                 }
-                items(libraries, key = { it.id }) { library ->
-                    FilterChip(
-                        selected = activeLibraryId == library.id,
-                        onClick = { activeLibraryId = library.id },
-                        label = { Text(library.name, maxLines = 1) }
-                    )
+            }
+            if (searchVisible) OutlinedTextField(
+                value = search, onValueChange = { search = it }, label = { Text("Title or author") },
+                singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${filtered.size} book${if (filtered.size == 1) "" else "s"}", Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box {
+                    TextButton(onClick = { showSort = true }) { Icon(Icons.Rounded.Sort, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(sortOrder) }
+                    DropdownMenu(expanded = showSort, onDismissRequest = { showSort = false }) {
+                        listOf("Recent", "Title", "Author", "Progress", "Imported").forEach { order ->
+                            DropdownMenuItem(text = { Text(order) }, onClick = {
+                                sortOrder = order; showSort = false; libraryPreferences.edit().putString("sortOrder", order).apply()
+                            })
+                        }
+                    }
+                }
+                IconButton(onClick = { listView = !listView; libraryPreferences.edit().putBoolean("listView", listView).apply() }) {
+                    Icon(if (listView) Icons.Rounded.GridView else Icons.Rounded.ViewList, if (listView) "Show bookshelf" else "Show list")
+                }
+            }
+            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(listOf("All", "Reading", "Unread", "Finished")) { value ->
+                    FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(value) })
                 }
             }
             if (filtered.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(if (books.isEmpty()) "Add books with + or scan a folder." else "No books in this library.", color = Color(0xFF3A2B22))
+                Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Rounded.MenuBook, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(16.dp))
+                    Text(if (books.isEmpty()) "Your next read starts here" else "No books here yet", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(8.dp))
+                    Text(if (search.isNotBlank()) "Try another title or author." else "Import books or move them here from another library.",
+                        style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = { import.launch(arrayOf("*/*")) }) { Icon(Icons.Rounded.Add, null); Text("Import books") }
                 }
             } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(94.dp),
-                    contentPadding = PaddingValues(vertical = 14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalArrangement = Arrangement.spacedBy(15.dp)
-                ) {
+                val toggle: (BookEntity) -> Unit = { book ->
+                    selectedBooks = if (book.id in selectedBooks) selectedBooks - book.id else selectedBooks + book.id
+                }
+                if (listView) LazyColumn(Modifier.weight(1f)) {
                     items(filtered, key = { it.id }) { book ->
-                        BookTile(
-                            book = book,
-                            recent = book.id == latest,
-                            selected = book.id in selectedBooks,
-                            selectionMode = selectedBooks.isNotEmpty(),
-                            onOpen = { selectedId = book.id },
-                            onToggleSelection = {
-                                selectedBooks = if (book.id in selectedBooks) selectedBooks - book.id else selectedBooks + book.id
-                            }
-                        )
+                        BookListRow(book, book.id == latest, book.id in selectedBooks,
+                            onClick = { if (selectedBooks.isEmpty()) selectedId = book.id else toggle(book) }, onLongClick = { toggle(book) })
+                    }
+                } else {
+                    val rows = filtered.chunked(3)
+                    LazyColumn(Modifier.weight(1f).background(Color(0xFF61412C)), contentPadding = PaddingValues(top = 4.dp)) {
+                        items(rows, key = { row -> row.first().id }) { row ->
+                            ShelfRow(row, latest, selectedBooks,
+                                onOpen = { selectedId = it.id }, onToggle = toggle)
+                        }
                     }
                 }
             }
@@ -277,6 +430,13 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
       }
     }
 
+    if (showStatistics) ReadingStatisticsDialog(books) { showStatistics = false }
+    pendingRestore?.let { uri ->
+        AlertDialog(onDismissRequest = { pendingRestore = null }, title = { Text("Restore backup?") },
+            text = { Text("Books, libraries, reading progress, notes and bookmarks will be imported. Books already present will be skipped.") },
+            confirmButton = { TextButton(enabled = !libraryBusy, onClick = { pendingRestore = null; viewModel.backup(uri, restore = true) }) { Text("Restore") } },
+            dismissButton = { TextButton(onClick = { pendingRestore = null }) { Text("Cancel") } })
+    }
     opened?.let {
         AlertDialog(
             onDismissRequest = { selectedId = null },
@@ -287,10 +447,13 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     }
     if (showCreateLibrary) {
         AlertDialog(
-            onDismissRequest = { showCreateLibrary = false },
-            title = { Text("Create library") },
+            onDismissRequest = { if (!libraryBusy) showCreateLibrary = false },
+            title = { Text(if (editingLibraryId == null) "New library" else "Rename library") },
             text = {
                 OutlinedTextField(
+                    isError = libraryError != null,
+                    supportingText = { libraryError?.let { Text(it) } },
+                    enabled = !libraryBusy,
                     value = libraryName,
                     onValueChange = { libraryName = it.take(60) },
                     label = { Text("Library name") },
@@ -298,12 +461,14 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                 )
             },
             confirmButton = {
-                TextButton(enabled = libraryName.isNotBlank(), onClick = {
-                    viewModel.createLibrary(libraryName)
-                    showCreateLibrary = false
-                }) { Text("Create") }
+                TextButton(enabled = libraryName.isNotBlank() && !libraryBusy, onClick = {
+                    viewModel.saveLibrary(editingLibraryId, libraryName) { id, failure ->
+                        if (id != null) { activeLibraryId = id; filter = "All"; search = ""; showCreateLibrary = false }
+                        libraryError = failure
+                    }
+                }) { Text(if (libraryBusy) "Saving…" else "Save") }
             },
-            dismissButton = { TextButton(onClick = { showCreateLibrary = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(enabled = !libraryBusy, onClick = { showCreateLibrary = false }) { Text("Cancel") } }
         )
     }
     if (showMoveBooks) {
@@ -316,18 +481,30 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                     items(libraries, key = { it.id }) { library ->
                         TextButton(
                             onClick = {
-                                viewModel.moveBooks(selectedBooks.toList(), library.id)
-                                selectedBooks = emptySet()
-                                showMoveBooks = false
+                                viewModel.moveBooks(selectedBooks.toList(), library.id) { success ->
+                                    if (success) {
+                                        activeLibraryId = library.id; filter = "All"; search = ""
+                                        selectedBooks = emptySet(); showMoveBooks = false
+                                    }
+                                }
                             },
+                            enabled = !libraryBusy,
                             modifier = Modifier.fillMaxWidth()
                         ) { Text(library.name, modifier = Modifier.fillMaxWidth()) }
                     }
                 }
             },
-            confirmButton = {},
+            confirmButton = { TextButton(onClick = { libraryName = ""; editingLibraryId = null; libraryError = null; showCreateLibrary = true }) { Text("New library") } },
             dismissButton = { TextButton(onClick = { showMoveBooks = false }) { Text("Cancel") } }
         )
+    }
+    deletingLibraryId?.let { id ->
+        AlertDialog(onDismissRequest = { deletingLibraryId = null }, title = { Text("Delete library?") },
+            text = { Text("Its books will move to My Library.") },
+            confirmButton = { TextButton(enabled = !libraryBusy, onClick = {
+                viewModel.deleteLibrary(id) { success -> if (success) { activeLibraryId = "default"; deletingLibraryId = null } }
+            }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { deletingLibraryId = null }) { Text("Cancel") } })
     }
     if (showDeleteBooks) {
         AlertDialog(
@@ -363,6 +540,10 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                         Text(if (showScrapeOptions) "Hide site selectors" else "Advanced site selectors")
                     }
                     if (showScrapeOptions) {
+                        OutlinedTextField(value = chapterLimit,
+                            onValueChange = { chapterLimit = it.filter(Char::isDigit).take(5) },
+                            label = { Text("Maximum chapters") }, singleLine = true,
+                            supportingText = { Text("1–9,000. A longer book will ask you to increase this limit.") })
                         OutlinedTextField(
                             value = chapterLinkSelector,
                             onValueChange = { chapterLinkSelector = it },
@@ -381,10 +562,12 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                 }
             },
             confirmButton = {
-                TextButton(enabled = novelUrl.startsWith("http", ignoreCase = true), onClick = {
+                TextButton(enabled = downloadProgress == null && novelUrl.startsWith("http", ignoreCase = true) &&
+                    chapterLimit.toIntOrNull()?.let { it in 1..9_000 } == true, onClick = {
                     viewModel.createEpubFromUrl(
                         novelUrl,
                         WebNovelScrapeOptions(
+                            maxChapters = chapterLimit.toIntOrNull() ?: 2_000,
                             chapterLinkSelector = chapterLinkSelector,
                             chapterContentSelector = chapterContentSelector
                         ),
@@ -416,7 +599,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
             },
             confirmButton = {
                 TextButton(enabled = checked.isNotEmpty(), onClick = {
-                    files.filter { it.uri in checked }.forEach { viewModel.import(it.uri) }
+                    files.filter { it.uri in checked }.forEach { viewModel.import(it.uri, activeLibraryId ?: "default") }
                     candidates = null
                 }) { Text("Import selected") }
             },
@@ -447,7 +630,9 @@ private fun BookTile(
                 .clip(coverShape)
                 .then(if (selected) Modifier.border(2.dp, Color(0xFFFFD36A), coverShape) else Modifier)
                 .background(Color(covers[Math.floorMod(book.id.hashCode(), covers.size)]))
+                .semantics { this.selected = selected }
                 .combinedClickable(
+                    role = Role.Button,
                     onClick = { if (selectionMode) onToggleSelection() else onOpen() },
                     onLongClick = onToggleSelection,
                     onLongClickLabel = "Select book"
@@ -468,16 +653,67 @@ private fun BookTile(
             if (artwork == null) Text(book.format, color = Color.White, modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
                 style = MaterialTheme.typography.labelSmall)
         }
-        Text(
-            "${(book.progress * 100).toInt()}%",
-            style = MaterialTheme.typography.labelSmall, maxLines = 1,
-            color = Color(0xFF2E241E), modifier = Modifier.padding(top = 3.dp)
-        )
-        LinearProgressIndicator(
-            progress = { book.progress },
-            color = Color(0xFF584033),
-            trackColor = Color(0x883A2A20),
-            modifier = Modifier.fillMaxWidth().height(3.dp)
-        )
+
     }
+}
+
+@Composable
+private fun ShelfRow(
+    books: List<BookEntity>, recentId: String?, selectedIds: Set<String>,
+    onOpen: (BookEntity) -> Unit, onToggle: (BookEntity) -> Unit
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth()) {
+            Image(painterResource(com.paperlight.reader.R.drawable.library_shelf_row), null,
+                Modifier.matchParentSize(), contentScale = ContentScale.FillBounds)
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.Bottom) {
+                repeat(3) { index ->
+                    Box(Modifier.weight(1f)) {
+                        books.getOrNull(index)?.let { book ->
+                            BookTile(book, book.id == recentId, book.id in selectedIds, selectedIds.isNotEmpty(),
+                                onOpen = { onOpen(book) }, onToggleSelection = { onToggle(book) })
+                        }
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().background(Color(0xFF493021))
+            .padding(start = 20.dp, end = 20.dp, top = 3.dp, bottom = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+            repeat(3) { index ->
+                Column(Modifier.weight(1f)) {
+                    books.getOrNull(index)?.let { book ->
+                        Text("${(book.progress * 100).toInt()}%", color = Color(0xFFF4E8D5),
+                            style = MaterialTheme.typography.labelSmall)
+                        Spacer(Modifier.height(3.dp))
+                        LinearProgressIndicator(progress = { book.progress }, color = Color(0xFFDBC38E),
+                            trackColor = Color(0xFF281D15), modifier = Modifier.fillMaxWidth().height(3.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun BookListRow(book: BookEntity, recent: Boolean, selected: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+    val cover by produceState<android.graphics.Bitmap?>(null, book.id) {
+        value = withContext(Dispatchers.IO) { BookArtwork.load(book) }
+    }
+    ListItem(
+        headlineContent = { Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        supportingContent = { Text(listOf(book.author, book.format, "${(book.progress * 100).toInt()}%").filter { it.isNotBlank() }.joinToString(" · ")) },
+        leadingContent = {
+            Box(Modifier.size(width = 48.dp, height = 68.dp).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                cover?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+                    ?: Icon(Icons.Rounded.MenuBook, null)
+            }
+        },
+        trailingContent = { if (selected) Icon(Icons.Rounded.CheckCircle, "Selected") else if (recent) Icon(Icons.Rounded.Bookmark, "Last read") },
+        colors = ListItemDefaults.colors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface),
+        modifier = Modifier.semantics { this.selected = selected }.combinedClickable(role = Role.Button, onClick = onClick, onLongClick = onLongClick)
+    )
+    HorizontalDivider()
 }
