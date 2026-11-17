@@ -1,3 +1,13 @@
+# 0.8.2-dev
+
+- Darken Paper and Light menus and add shadows at the reading edges.
+- Center and fit image-only EPUB covers.
+- Track finger movement in Slide mode and render a curved fold in Flip mode, with reverse unfolding on backward turns.
+
+# 0.8.1-dev
+
+- Remove the duplicate Kotlin import that prevents the reader screen from compiling.
+
 # 0.8.0-dev
 
 - Add persistent type, size, spacing, margin, alignment and page color controls, including local font import.
