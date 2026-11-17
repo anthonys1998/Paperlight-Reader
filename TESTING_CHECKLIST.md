@@ -1,3 +1,12 @@
+## 0.8.3 verification
+- Run `node tests/pagination.test.cjs`.
+- For visual regression: `npm install --no-save playwright@1.58.2`, `npx playwright install --with-deps chromium`, then `node tests/rendering.test.cjs`. Set CHROMIUM_PATH to use a system Chromium. This test is provided but was blocked from running in the authoring environment.
+- Check forward/back curl halfway through a gesture, cancellation and release in both themes.
+- Drag slide slowly, pause while holding, reverse direction, then release. Repeat on long chapters and at chapter boundaries.
+- Test None/Grain/Linen, reopen book/app, toggle theme and resize/rotate without losing reading position.
+- Reader should hide status/navigation bars; swipe from system edge temporarily reveals them; leaving reader restores them. Check return from dialogs and font picker.
+- Build APK using the included GitHub workflow and confirm app version 0.8.3-dev.
+
 # Manual test checklist — EPUB milestone
 
 The project has not been compiled or run in this environment. Once opened in Android Studio and installed on a device, validate the following before treating this milestone as usable:

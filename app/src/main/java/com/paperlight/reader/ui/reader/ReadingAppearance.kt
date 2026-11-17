@@ -21,16 +21,16 @@ internal data class ReadingAppearance(
     val margins: Int = 24,
     val font: String = "serif",
     val alignment: String = "original",
+    val texture: String = "none",
 ) {
     fun json() = JSONObject().put("size", size.toDouble()).put("lineHeight", lineHeight.toDouble())
-        .put("margins", margins).put("font", font).put("alignment", alignment)
+        .put("margins", margins).put("font", font).put("alignment", alignment).put("texture", texture)
 }
 
 internal data class ReaderPalette(val paper: Color, val ink: Color, val panel: Color, val accent: Color)
 
 internal val readerPalettes = listOf(
-    ReaderPalette(Color(0xFFF4EBD8), Color(0xFF342D24), Color(0xFFFBF4E6), Color(0xFF52633D)),
-    ReaderPalette(Color(0xFFF9F9F5), Color(0xFF2C302E), Color(0xFFFFFFFF), Color(0xFF395F55)),
+    ReaderPalette(Color(0xFFF9F9F5), Color(0xFF2C302E), Color(0xFFE8EBE6), Color(0xFF395F55)),
     ReaderPalette(Color(0xFF1D201F), Color(0xFFE1DFD5), Color(0xFF292D2B), Color(0xFFB4CA9A)),
 )
 
@@ -113,8 +113,15 @@ internal fun ReadingAppearanceDialog(
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("Page color", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("Paper", "Light", "Dark").forEachIndexed { index, label ->
+                    listOf("Light", "Dark").forEachIndexed { index, label ->
                         FilterChip(selected = theme == index, onClick = { onTheme(index) }, label = { Text(label) })
+                    }
+                }
+                Text("Paper texture", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("none" to "None", "grain" to "Grain", "linen" to "Linen").forEach { (texture, label) ->
+                        FilterChip(selected = value.texture == texture,
+                            onClick = { onChange(value.copy(texture = texture)) }, label = { Text(label) })
                     }
                 }
                 Text("Typeface", style = MaterialTheme.typography.labelLarge)

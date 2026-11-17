@@ -2,7 +2,7 @@
 
 Paperlight is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.8.0-dev
+## Current milestone: 0.8.2-dev
 
 ### Implemented in this source snapshot
 - Native Jetpack Compose bookshelf with equal-sized covers, title search, a last-read marker, warm light and dark palettes, and per-book progress.
@@ -27,7 +27,7 @@ Paperlight is an offline-first Android ebook reader project. Imported files are 
 - App follows the system light/dark theme in the library.
 
 ### Not implemented yet
-- Full fixed-layout EPUB rendering and a physically modeled page curl. The current turn uses a finger-tracked perspective preview.
+- Full fixed-layout EPUB rendering and a physically modeled page curl. The current turn uses a finger-tracked curved fold with shading.
 - PDF reader, TXT reader, CBZ/CBR image reader.
 - MOBI/AZW3 conversion. These formats are accepted into the library but cannot yet be opened. DRM-protected Kindle files are not supported and no DRM circumvention is included.
 - Collections, reading statistics, backup/export and accessibility polish.

@@ -1,3 +1,23 @@
+## 0.8.3-dev
+- Replace the narrow fold overlay with layered page content, a reflected sheet back, curved silhouette and fold shading. Backward turns reverse the forward geometry.
+- Claim horizontal touch gestures in page mode and update slide position continuously. Preserve text selection and scroll mode.
+- Remove Paper theme; migrate existing settings to Light/Dark. Add a sun/moon bottom action.
+- Add persistent None, Grain and Linen texture options independent of theme.
+- Hide Android system bars during reading and restore them on exit. Reapply after focus/resume; retain display-cutout safety.
+- Add a real Chromium touch/rendering regression test in addition to the navigation harness.
+
+Validation: navigation harness passes. Chromium could not launch in the authoring environment (socket access denied); Android SDK/Gradle unavailable. APK compilation, on-device gesture feel, system bars and visual curl are NOT verified. Adjacent chapter content is loaded only after a committed turn, so chapter-boundary previews do not yet show the neighboring chapter during a drag.
+
+# 0.8.2-dev
+
+- Darken Paper and Light menus and add shadows at the reading edges.
+- Center and fit image-only EPUB covers.
+- Track finger movement in Slide mode and render a curved fold in Flip mode, with reverse unfolding on backward turns.
+
+# 0.8.1-dev
+
+- Remove the duplicate Kotlin import that prevents the reader screen from compiling.
+
 # 0.8.0-dev
 
 - Add persistent type, size, spacing, margin, alignment and page color controls, including local font import.
