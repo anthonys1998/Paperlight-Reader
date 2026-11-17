@@ -390,6 +390,21 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  p,li{orphans:2;widows:2;} img,svg,video{max-width:100%!important;max-height:90%!important;object-fit:contain!important;break-inside:avoid!important;} h1,h2,h3,h4{break-after:avoid!important;} a{color:${'$'}{palettes[mode].link}!important;}`;
  document.head.appendChild(style);
  let scrolling=$scrollMode;
+ // Navigation owns the page index; animated scroll geometry must never own it.
+ let currentPage=0;
+ let pageTotal=1;
+ let pageStride=1;
+ let pageLimit=0;
+ let turning=false;
+ let layoutWidth=0,layoutHeight=0;
+ let activeAnimation=null;
+ let motionGeneration=0;
+ function cancelMotion(){
+   motionGeneration++;
+   if(activeAnimation) activeAnimation.cancel();
+   activeAnimation=null;
+   turning=false;
+ }
  // Give the viewport and text columns separate boxes so publisher body styles
  // cannot change the size of either the scroll area or the page fragments.
  const viewport=document.createElement('div');
@@ -405,6 +420,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    const ratio=window.devicePixelRatio||1;
    const width=window.innerWidth||Math.round($widthPx/ratio);
    const height=window.innerHeight>48?window.innerHeight:Math.round($heightPx/ratio);
+   layoutWidth=width; layoutHeight=height;
    const margin=Math.min(24,Math.floor(Math.min(width,height)/4));
    const contentWidth=Math.max(1,width-2*margin);
    const contentHeight=Math.max(1,height-2*margin);
@@ -415,6 +431,8 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
        width:${'$'}{width}px!important;height:${'$'}{height}px!important;
        overflow-x:hidden!important;overflow-y:${'$'}{scrolling?'auto':'hidden'}!important;
        scrollbar-width:none;overscroll-behavior:none;
+       overflow-anchor:none!important;scroll-behavior:auto!important;
+       background:${'$'}{palettes[mode].bg};
      }
      #paperlight-content{
        box-sizing:content-box!important;
@@ -429,28 +447,38 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
        max-height:${'$'}{contentHeight}px!important;
      }
    `;
+   measurePages();
  }
- function step(){return Math.max(1,scrolling?viewport.clientHeight*.9:viewport.clientWidth);}
+ function measurePages(){
+   if(scrolling) return;
+   pageStride=Math.max(1,viewport.clientWidth);
+   pageLimit=Math.max(0,viewport.scrollWidth-viewport.clientWidth);
+   pageTotal=Math.round(pageLimit/pageStride)+1;
+   currentPage=Math.min(currentPage,pageTotal-1);
+ }
+ function step(){return Math.max(1,scrolling?viewport.clientHeight*.9:pageStride);}
  function maxOffset(){
-   return Math.max(0,scrolling?viewport.scrollHeight-viewport.clientHeight:viewport.scrollWidth-viewport.clientWidth);
+   return Math.max(0,scrolling?viewport.scrollHeight-viewport.clientHeight:pageLimit);
  }
  function position(){return scrolling?viewport.scrollTop:viewport.scrollLeft;}
  function fraction(){
    if(!scrolling) return page()/Math.max(1,total()-1);
    return Math.min(1,Math.max(0,position()/Math.max(1,maxOffset())));
  }
- function total(){return Math.round(maxOffset()/step())+1;}
- function page(){return position()>=maxOffset()-1?total()-1:Math.min(total()-1,Math.round(position()/step()));}
+ function total(){return scrolling?Math.round(maxOffset()/step())+1:pageTotal;}
+ function page(){return scrolling?Math.min(total()-1,Math.round(position()/step())):currentPage;}
  function moveTo(offset,behavior){
    viewport.scrollTo({left:scrolling?0:offset,top:scrolling?offset:0,behavior});
  }
  function report(){if(turning) return; Paperlight.onPage(page(),total(),fraction(),$chapterIndex,scrolling);}
  function restore(progress){
-   moveTo(scrolling?progress*maxOffset():Math.round(progress*(total()-1))*step(),'instant');
+   currentPage=Math.max(0,Math.min(total()-1,Math.round(progress*(total()-1))));
+   moveTo(scrolling?progress*maxOffset():Math.min(currentPage*step(),pageLimit),'instant');
    report();
  }
  window.paperlightSetScroll=function(next){
    const progress=fraction();
+   cancelMotion();
    scrolling=next;
    configureMode();
    restore(progress);
@@ -458,7 +486,6 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  configureMode();
  if($measure) return viewport.clientHeight > 48 ? total() : null;
  let flip=$flip;
- let turning=false;
  window.paperlightSetFlip=function(enabled){flip=enabled;};
  window.paperlightMove=async function(direction){
    if(turning) return;
@@ -470,27 +497,46 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      : (nextPage<0||nextPage>=total());
    if(atEdge){Paperlight.onChapterTurn($chapterIndex,direction);return;}
    const target=scrolling?position()+direction*step():Math.min(nextPage*step(),maxOffset());
-   if(!flip||scrolling||window.matchMedia('(prefers-reduced-motion: reduce)').matches){
-     moveTo(target,'smooth');
-     return;
+   if(scrolling){moveTo(target,'smooth');return;}
+   currentPage=nextPage;
+   const generation=++motionGeneration;
+   if(window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+     moveTo(target,'instant');report();return;
    }
    turning=true;
-   const transform=(angle)=>'perspective(950px) rotateY('+angle+'deg)';
-   const hinge=()=> (viewport.scrollLeft+(direction>0?0:viewport.clientWidth))+'px 50%';
-   const origin=hinge();
+   // Animate the fixed-size viewport, never the multi-column chapter. Rotating
+   // the chapter changes its overflow bounds and can clamp scrollLeft to zero.
+   const origin=direction>0?'left center':'right center';
+   async function animate(frames,options){
+     if(!viewport.animate) return;
+     const animation=viewport.animate(frames,options);
+     activeAnimation=animation;
+     await animation.finished.catch(()=>{});
+     if(activeAnimation===animation) activeAnimation=null;
+   }
    try {
-     await content.animate([
-       {transform:'none',transformOrigin:origin,filter:'brightness(1)'},
-       {transform:transform(direction*32),transformOrigin:origin,filter:'brightness(.72)'}
-     ],{duration:130,easing:'ease-in'}).finished.catch(()=>{});
+     if(flip){
+       await animate([
+         {transform:'none',transformOrigin:origin,filter:'brightness(1)'},
+         {transform:'perspective(950px) rotateY('+direction*18+'deg)',transformOrigin:origin,filter:'brightness(.82)'}
+       ],{duration:110,easing:'ease-in'});
+       if(generation!==motionGeneration) return;
+     }
      moveTo(target,'instant');
-     await content.animate([
-       {transform:transform(-direction*27),transformOrigin:hinge(),filter:'brightness(.78)'},
-       {transform:'none',transformOrigin:hinge(),filter:'brightness(1)'}
-     ],{duration:180,easing:'ease-out'}).finished.catch(()=>{});
+     await animate(flip?[
+       {transform:'perspective(950px) rotateY('+(-direction*18)+'deg)',transformOrigin:origin,filter:'brightness(.82)'},
+       {transform:'none',transformOrigin:origin,filter:'brightness(1)'}
+     ]:[
+       {transform:'translateX('+direction*16+'px)',opacity:.7},
+       {transform:'none',opacity:1}
+     ],{duration:160,easing:'ease-out'});
    } finally {
-     turning=false;
-     report();
+     if(generation===motionGeneration){
+       // Reassert the logical destination after the visual effect completes.
+       moveTo(Math.min(currentPage*step(),pageLimit),'instant');
+       turning=false;
+       report();
+     }
    }
  };
  let touchStart;
@@ -505,21 +551,19 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    touchStart=null;
    if(Math.abs(dx)>45&&Math.abs(dx)>Math.abs(dy)*1.4) window.paperlightMove(dx<0?1:-1);
  },{passive:true});
- window.paperlightTheme=function(next){mode=palettes[next]?next:'paper';document.documentElement.style.setProperty('background',palettes[mode].bg,'important');document.body.style.setProperty('color',palettes[mode].fg,'important');style.textContent=style.textContent.replace(/a\{color:[^}]+\}/,`a{color:${'$'}{palettes[mode].link}!important;}`);};
+ window.paperlightTheme=function(next){mode=palettes[next]?next:'paper';viewport.style.background=palettes[mode].bg;document.documentElement.style.setProperty('background',palettes[mode].bg,'important');document.body.style.setProperty('color',palettes[mode].fg,'important');style.textContent=style.textContent.replace(/a\{color:[^}]+\}/,`a{color:${'$'}{palettes[mode].link}!important;}`);};
  window.paperlightFont=function(scale){
    const progress=fraction();
+   cancelMotion();
    document.body.style.setProperty('font-size',scale+'em','important');
+   measurePages();
    restore(progress);
  };
  let reportTimer;
- let lastFraction=$initialFraction;
- const reportPosition=report;
- report=function(){
-   if(!turning) lastFraction=fraction();
-   reportPosition();
- };
  window.addEventListener('resize',()=>{
-   const progress=lastFraction;
+   if(window.innerWidth===layoutWidth&&window.innerHeight===layoutHeight) return;
+   const progress=fraction();
+   cancelMotion();
    configureMode();
    restore(progress);
  });

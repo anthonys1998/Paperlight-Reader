@@ -1,3 +1,19 @@
+# 0.5.4-dev
+
+- Keep an explicit page index and stable layout metrics independent of animation.
+- Animate only the fixed-size viewport rather than transforming the complete chapter.
+- Reassert page position after transitions; cancel transitions safely during mode, font and size changes.
+- Add Node regression checks for navigation, native position resets, modes and resizing.
+- Validation: navigation simulation passed. Android build and real EPUB rendering remain unverified in this environment.
+
+# 0.5.3-dev
+
+- Advance to the next EPUB section from the last numbered page even if a narrow trailing margin remains.
+
+# 0.5.2-dev
+
+- Size the EPUB reading viewport separately from the book's styles and measure pages in that same viewport.
+
 # 0.5.1-dev
 
 - Give EPUB columns the full reader height and use the same layout for whole-book page counts.
