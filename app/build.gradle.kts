@@ -7,13 +7,21 @@ plugins {
 android {
     namespace = "com.paperlight.reader"
     compileSdk = 36
+    ndkVersion = "28.2.13676358"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 
     defaultConfig {
         applicationId = "com.paperlight.reader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 17
-        versionName = "0.8.4-dev"
+        versionCode = 20
+        versionName = "0.10.1-dev"
     }
 
     buildFeatures {
@@ -28,6 +36,7 @@ android {
 }
 
 dependencies {
+    implementation("com.github.junrar:junrar:8.1.2")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))

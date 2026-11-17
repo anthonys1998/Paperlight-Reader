@@ -2,7 +2,7 @@
 
 Paperlight is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.8.2-dev
+## Current milestone: 0.10.1-dev
 
 ### Implemented in this source snapshot
 - Native Jetpack Compose bookshelf with equal-sized covers, title search, a last-read marker, warm light and dark palettes, and per-book progress.
@@ -19,22 +19,27 @@ Paperlight is an offline-first Android ebook reader project. Imported files are 
 - Adjustable font size, line spacing, margins and alignment. Choose a generic typeface or import a TTF/OTF font.
 - Nested EPUB 2/3 contents and links to specific sections, with text-based position restoration during reflow.
 - A minimal top bar, labeled bottom actions, and a dedicated highlights and notes screen.
-- Three reading palettes: paper/sepia, white, and dark.
+- Light and dark reading palettes with optional paper textures.
 - Text-size adjustment and previous/next page/chapter navigation.
 - Coarse reading progress persistence and restore (chapter plus approximate page fraction).
 - Basic archive safety checks (path traversal rejection, entry-count and expanded-size limits) and stripping of publication scripts/inline event handlers before WebView rendering.
 - More consistent page-width calculations and an attempt to preserve the reader's relative position during device rotation.
 - App follows the system light/dark theme in the library.
 
+- PDF page rendering, pinch zoom, panning and position restore.
+- EPUB cover art and first-page PDF thumbnails on the bookshelf.
+
+- TXT reading with UTF-8, BOM-marked UTF-16 and a Windows-1252 fallback.
+- CBZ and CBR reading with naturally sorted pages, swipe page transitions, pinch zoom, light/dark backgrounds and paper textures. CBR supports standalone, unencrypted RAR4/5 archives within the decoder limits.
+- DRM-free MOBI, AZW and AZW3 reflowable reading using local libmobi reconstruction. Navigation lists reconstructed sections and precision varies by original book structure. Print Replica and KFX are outside this reader’s scope.
+
 ### Not implemented yet
-- Full fixed-layout EPUB rendering and a physically modeled page curl. The current turn uses a finger-tracked curved fold with shading.
-- PDF reader, TXT reader, CBZ/CBR image reader.
-- MOBI/AZW3 conversion. These formats are accepted into the library but cannot yet be opened. DRM-protected Kindle files are not supported and no DRM circumvention is included.
+- Full fixed-layout EPUB rendering and a physically modeled page curl. The current turn uses a finger-tracked diagonal corner fold with shading.
 - Collections, reading statistics, backup/export and accessibility polish.
 
 ## Build
 
-Open the `PaperlightReader` folder in Android Studio. The project uses Kotlin, Jetpack Compose, Room and Android WebView. Android SDK 36 and JDK 17 are configured. Let Android Studio sync Gradle and install any missing SDK components.
+Open the `PaperlightReader` folder in Android Studio. The project uses Kotlin, Jetpack Compose, Room and Android WebView. Android SDK 36, JDK 17, NDK 28.2.13676358 and CMake 3.22.1 are configured. Let Android Studio sync Gradle and install any missing SDK components.
 
 This source snapshot has not been compiled or device-tested in this environment. Treat it as an in-progress development build, not a release APK. The project currently does not include a Gradle wrapper; Android Studio can open it using its configured Gradle installation.
 
@@ -52,3 +57,5 @@ when you push a branch. You can also start it from **Actions → Build Android A
 Run workflow** once the workflow is on the default branch. After a successful run,
 download **Paperlight-debug** from the run's **Artifacts** section and extract
 `app-debug.apk`.
+
+The bundled libmobi 0.12 source is in `app/src/main/cpp/libmobi`. Its license and author notices are included there. The build leaves libmobi’s encryption support disabled.

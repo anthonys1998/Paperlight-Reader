@@ -60,6 +60,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import com.paperlight.reader.data.BookEntity
+import com.paperlight.reader.data.openLocalText
 import com.paperlight.reader.data.BookmarkStore
 import com.paperlight.reader.data.ReaderBookmark
 import com.paperlight.reader.data.ReaderAnnotation
@@ -202,7 +203,12 @@ fun EpubReaderScreen(
     LaunchedEffect(book.id) {
         runCatching {
             withContext(Dispatchers.IO) {
-                EpubBookParser.open(File(book.localPath), File(context.filesDir, "epub/${book.id}"))
+                val directory = File(context.filesDir, "epub/${book.id}")
+                if (book.format == "EPUB") EpubBookParser.open(File(book.localPath), directory)
+                else {
+                    directory.parentFile?.mkdirs()
+                    openLocalText(book, directory)
+                }
             }
         }.onSuccess { publication ->
             if (book.progress > 0f) {
@@ -211,7 +217,7 @@ fun EpubReaderScreen(
                 initialChapterFraction = (scaled - chapterIndex).coerceIn(0f, 1f)
             }
             parsed = publication
-        }.onFailure { error = it.message ?: "Could not open EPUB" }
+        }.onFailure { error = it.message ?: "Could not open this ${book.format} book" }
     }
 
     val publication = parsed
@@ -322,7 +328,7 @@ fun EpubReaderScreen(
 
     ReaderTheme(palette, dark = themeMode == 1) {
         Box(Modifier.fillMaxSize().background(background)) {
-            Box(Modifier.matchParentSize().displayCutoutPadding().padding(bottom = 23.dp)
+            Box(Modifier.matchParentSize().displayCutoutPadding().padding(top = 27.dp, bottom = 23.dp)
                 .onSizeChanged { viewport = it }) {
                 AndroidView(
                     modifier = Modifier.matchParentSize(),
@@ -456,6 +462,22 @@ fun EpubReaderScreen(
                     }
                 )
 
+            }
+            if (!barsVisible) {
+                Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(palette.paper)
+                    .displayCutoutPadding().height(27.dp).padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.fillMaxHeight().width(36.dp).clickable(onClick = onBack),
+                        contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.ArrowBack, "Back", Modifier.size(16.dp), tint = foreground)
+                    }
+                    Text(publication.title, Modifier.weight(1f).clickable { barsVisible = true }, color = foreground,
+                        style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Box(Modifier.fillMaxHeight().width(36.dp).clickable { barsVisible = true },
+                        contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.MoreVert, "Show reader controls", Modifier.size(16.dp), tint = foreground)
+                    }
+                }
             }
             ReaderFooter(Modifier.align(Alignment.BottomCenter), palette, chapterTitles[chapterIndex],
                 if (!scrollMode && reportedChapter == chapterIndex) "${page + 1}/$pageCount" else null,
@@ -1183,18 +1205,45 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    prepareCurl(direction);
    const p=direction>0?progress:1-progress;
    const w=layoutWidth,h=layoutHeight;
-   const edge=w*(1-p), bend=Math.sin(p*Math.PI)*w*.065;
-   const top=edge+bend*.5, bottom=edge-bend*.5;
-   const front='M 0 0 L '+top+' 0 Q '+(edge-bend*.45)+' '+h*.5+' '+bottom+' '+h+' L 0 '+h+' Z';
-   viewport.style.setProperty('clip-path','path("'+front+'")');
-   const left=edge-bend*1.2;
-   const back='M '+top+' 0 Q '+(edge-bend*.45)+' '+h*.5+' '+bottom+' '+h+' Q '+left+' '+h*.82+' '+left+' '+h*.35+' Q '+left+' '+h*.08+' '+top+' 0 Z';
-   // Reflect the printing on the reverse of the sheet and curve its silhouette.
+   // The crease is the perpendicular bisector between the lifted corner and
+   // its projected position. Clip both sides of the sheet against that line.
+   const edge=w*(1-p);
+   const slope=h>w ? w/h*0.76*Math.sin(Math.PI*p) : 0.62*Math.sin(Math.PI*p);
+   const scale=Math.hypot(1,slope);
+   const nx=1/scale,ny=slope/scale;
+   const distance=nx*edge+ny*h*.66;
+   const corners=[[0,0],[w,0],[w,h],[0,h]];
+   const signed=([x,y])=>nx*x+ny*y-distance;
+   function half(sign){
+     const result=[];
+     for(let i=0;i<corners.length;i++){
+       const a=corners[i],b=corners[(i+1)%corners.length];
+       const da=signed(a),db=signed(b);
+       if(sign*da>=0) result.push(a);
+       if(da*db<0){
+         const t=da/(da-db);
+         result.push([a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t]);
+       }
+     }
+     return result;
+   }
+   const polygon=points=>'polygon('+(points.length?points:[[0,0],[0,0],[0,0]])
+     .map(([x,y])=>x+'px '+y+'px').join(',')+')';
+   const lifted=half(1);
+   viewport.style.setProperty('clip-path',polygon(half(-1)));
    backPage.style.transformOrigin='0 0';
-   backPage.style.transform='matrix(-1,0,0,1,'+(2*edge)+',0)';
-   const mirrored='M '+(2*edge-top)+' 0 Q '+(edge+bend*.45)+' '+h*.5+' '+(2*edge-bottom)+' '+h+' Q '+(2*edge-left)+' '+h*.82+' '+(2*edge-left)+' '+h*.35+' Q '+(2*edge-left)+' '+h*.08+' '+(2*edge-top)+' 0 Z';
-   backPage.style.clipPath='path("'+mirrored+'")';
-   const svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+w+' '+h+'"><defs><linearGradient id="f"><stop stop-color="#000" stop-opacity=".38"/><stop offset=".35" stop-color="'+palettes[mode].bg+'" stop-opacity=".94"/><stop offset=".72" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#000" stop-opacity=".3"/></linearGradient></defs><path d="'+back+'" fill="url(#f)"/><path d="M '+top+' 0 Q '+(edge-bend*.45)+' '+h*.5+' '+bottom+' '+h+'" fill="none" stroke="#000" stroke-opacity=".2" stroke-width="3"/></svg>';
+   backPage.style.transform='matrix('+[1-2*nx*nx,-2*nx*ny,-2*nx*ny,1-2*ny*ny,2*distance*nx,2*distance*ny].join(',')+')';
+   backPage.style.clipPath=polygon(lifted);
+   const reflected=lifted.map(([x,y])=>{
+     const d=signed([x,y]);
+     return [x-2*d*nx,y-2*d*ny].join(',');
+   }).join(' ');
+   const creaseX=distance*nx,creaseY=distance*ny;
+   const svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+w+' '+h+'"><defs>'+
+     '<linearGradient id="f" gradientUnits="userSpaceOnUse" x1="'+creaseX+'" y1="'+creaseY+'" x2="'+(creaseX-46*nx)+'" y2="'+(creaseY-46*ny)+'">'+
+     '<stop stop-color="#000" stop-opacity=".27"/><stop offset=".25" stop-color="'+palettes[mode].bg+'" stop-opacity=".83"/>'+
+     '<stop offset="1" stop-color="'+palettes[mode].bg+'" stop-opacity=".91"/></linearGradient></defs>'+
+     '<polygon points="'+reflected+'" fill="url(#f)" stroke="#000" stroke-opacity=".17" stroke-width="1"/></svg>';
    fold.style.display='block';
    fold.style.backgroundImage='url("data:image/svg+xml,'+encodeURIComponent(svg)+'")';
  }

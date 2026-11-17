@@ -5,7 +5,12 @@ import android.provider.DocumentsContract
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import com.paperlight.reader.data.BookArtwork
+import com.paperlight.reader.ui.reader.ImagePageReaderScreen
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
@@ -91,7 +96,13 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     }
 
     val opened = books.find { it.id == selectedId }
-    if (opened?.format == "EPUB") {
+    if (opened != null && opened.format in setOf("PDF", "CBZ", "CBR")) {
+        BackHandler { selectedId = null }
+        ImagePageReaderScreen(opened, onBack = { selectedId = null },
+            onProgress = { viewModel.updateProgress(opened.id, it) })
+        return
+    }
+    if (opened != null && opened.format in setOf("EPUB", "TXT", "MOBI", "AZW3")) {
         BackHandler { selectedId = null }
         Box(Modifier.fillMaxSize()) {
             EpubReaderScreen(
@@ -200,6 +211,9 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun BookTile(book: BookEntity, recent: Boolean, onOpen: () -> Unit, onRemove: () -> Unit) {
+    val cover by produceState<android.graphics.Bitmap?>(null, book.id) {
+        value = withContext(Dispatchers.IO) { BookArtwork.load(book) }
+    }
     val covers = listOf(0xFF344B53, 0xFF526048, 0xFF794942, 0xFF695474, 0xFF4F586E)
     Column {
         androidx.compose.foundation.layout.Box(
@@ -207,14 +221,17 @@ private fun BookTile(book: BookEntity, recent: Boolean, onOpen: () -> Unit, onRe
                 .background(Color(covers[Math.floorMod(book.id.hashCode(), covers.size)]))
                 .combinedClickable(onClick = onOpen, onLongClick = onRemove, onLongClickLabel = "Remove book")
         ) {
-            Column(Modifier.align(Alignment.Center).padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            val artwork = cover
+            if (artwork != null) {
+                Image(artwork.asImageBitmap(), book.title, Modifier.matchParentSize(), contentScale = ContentScale.Fit)
+            } else Column(Modifier.align(Alignment.Center).padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Rounded.MenuBook, null, tint = Color(0xFFFFEFCE))
                 Text(book.title, color = Color.White, fontFamily = FontFamily.Serif,
                     maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
             }
             if (recent) Icon(Icons.Rounded.Bookmark, "Last read", tint = Color(0xFFB5F0DB),
                 modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp))
-            Text(book.format, color = Color.White, modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
+            if (artwork == null) Text(book.format, color = Color.White, modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
                 style = MaterialTheme.typography.labelSmall)
         }
         Text(
