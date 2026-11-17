@@ -111,10 +111,15 @@ fun EpubReaderScreen(
         }
         counts = measured
     }
-    val bookTotal = counts?.sum() ?: 0
+    val measuredChapterPages = counts?.get(chapterIndex)
+    val chapterPages = if (!scrollMode && reportedChapter == chapterIndex) pageCount else measuredChapterPages
+    val bookTotal = counts?.let { pages ->
+        pages.sum() - pages[chapterIndex] + (chapterPages ?: pages[chapterIndex])
+    } ?: 0
     val bookPage = counts?.let { pages ->
-        val indexInChapter = if (scrollMode) (fraction * (pages[chapterIndex] - 1)).roundToInt() else page
-        pages.take(chapterIndex).sum() + indexInChapter.coerceIn(0, pages[chapterIndex] - 1) + 1
+        val lastPage = (chapterPages ?: pages[chapterIndex]) - 1
+        val indexInChapter = if (scrollMode) (fraction * lastPage).roundToInt() else page
+        pages.take(chapterIndex).sum() + indexInChapter.coerceIn(0, lastPage) + 1
     } ?: 0
     val savedPosition = (chapterIndex + fraction * .9999f) / publication.chapters.size
     LaunchedEffect(reportedChapter, chapterIndex, savedPosition, bookPage, bookTotal) {
@@ -204,12 +209,14 @@ fun EpubReaderScreen(
                 }
             ) { Text(if (flip) "Transition: Page flip" else "Transition: Simple slide", color = foreground) }
         }
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { viewport = it }) {
             AndroidView(
-                modifier = Modifier.matchParentSize().onSizeChanged { viewport = it },
+                modifier = Modifier.matchParentSize(),
                 factory = { ctx ->
                     WebView(ctx).apply {
                         settings.javaScriptEnabled = true
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = false
                         settings.allowFileAccess = true // EPUB-relative images and stylesheets are local files.
                         settings.allowContentAccess = false
                         settings.allowFileAccessFromFileURLs = false
@@ -245,7 +252,7 @@ fun EpubReaderScreen(
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView, url: String?) {
                                 val fraction = if (isRestoringPosition) initialChapterFraction else 0f
-                                view.evaluateJavascript(buildReaderScript(themeMode, fontScale, fraction, scrollMode, chapterIndex, flip = flip)) {
+                                view.evaluateJavascript(buildReaderScript(themeMode, fontScale, fraction, scrollMode, chapterIndex, view.width, view.height, flip = flip)) {
                                     isRestoringPosition = false
                                     initialChapterFraction = 0f
                                 }
@@ -269,8 +276,6 @@ fun EpubReaderScreen(
                             }
                         }
                         webView = this
-                        loadedChapterPath = chapter.file.absolutePath
-                        loadChapter(this, chapter)
                     }
                 },
                 onRelease = { view ->
@@ -279,9 +284,13 @@ fun EpubReaderScreen(
                 },
                 update = { view ->
                     webView = view
-                    if (loadedChapterPath != chapter.file.absolutePath) {
+                    if (viewport.width > 0 && viewport.height > 0 && loadedChapterPath != chapter.file.absolutePath) {
                         loadedChapterPath = chapter.file.absolutePath
-                        loadChapter(view, chapter)
+                        view.post {
+                            if (view.width > 0 && view.height > 0 && loadedChapterPath == chapter.file.absolutePath) {
+                                loadChapter(view, chapter)
+                            }
+                        }
                     }
                 }
             )
@@ -290,6 +299,8 @@ fun EpubReaderScreen(
                 factory = { ctx ->
                     WebView(ctx).apply {
                         settings.javaScriptEnabled = true
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = false
                         settings.allowFileAccess = true
                         settings.allowContentAccess = false
                         settings.blockNetworkLoads = true
@@ -327,7 +338,7 @@ fun EpubReaderScreen(
 }
 
 private fun loadChapter(webView: WebView, chapter: EpubChapter, html: String = chapterHtml(chapter)) {
-    val base = chapter.file.parentFile?.toURI()?.toString() ?: "file:///"
+    val base = chapter.file.parentFile?.let { Uri.fromFile(it).toString().trimEnd('/') + "/" } ?: "file:///"
     webView.loadDataWithBaseURL(base, html, "text/html", "UTF-8", null)
 }
 
@@ -335,14 +346,19 @@ private fun chapterHtml(chapter: EpubChapter): String {
     // Publication scripting is not supported in this milestone. Strip scripts and inline
     // event handlers before loading so an imported book cannot execute arbitrary JS.
     val html = chapter.file.readText(Charsets.UTF_8)
+        .trimStart('﻿', ' ', '\t', '\r', '\n')
+        .replaceFirst(Regex("""^<\?xml[^>]*>\s*""", RegexOption.IGNORE_CASE), "")
+        .replaceFirst(Regex("""^<!doctype[^>]*>\s*""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""<meta\b(?=[^>]*\bname\s*=\s*(?:"viewport"|'viewport'|viewport\b))[^>]*>""", RegexOption.IGNORE_CASE), "")
         .replace(Regex("<script\\b[^>]*>[\\s\\S]*?</script\\s*>", RegexOption.IGNORE_CASE), "")
         .replace(Regex("\\s+on[a-z]+\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)", RegexOption.IGNORE_CASE), "")
         .replace(Regex("<(iframe|object|embed)\\b[^>]*>[\\s\\S]*?</\\1\\s*>", RegexOption.IGNORE_CASE), "")
         .replace(Regex("(href|src)\\s*=\\s*([\"'])\\s*javascript:[^\"']*\\2", RegexOption.IGNORE_CASE), "$1=\"#\"")
     val viewport = """<meta name="viewport" content="width=device-width, initial-scale=1">"""
     val head = Regex("<head(?:\\s[^>]*)?>", RegexOption.IGNORE_CASE).find(html)
-    return if (head == null) viewport + html else
+    val document = if (head == null) viewport + html else
         html.substring(0, head.range.last + 1) + viewport + html.substring(head.range.last + 1)
+    return "<!doctype html>" + document
 }
 
 private suspend fun measureChapter(view: WebView, chapter: EpubChapter, html: String, scale: Float): Int? =
@@ -351,7 +367,7 @@ private suspend fun measureChapter(view: WebView, chapter: EpubChapter, html: St
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = true
 
             override fun onPageFinished(view: WebView, url: String?) {
-                view.evaluateJavascript(buildReaderScript(0, scale, 0f, false, 0, measure = true)) {
+                view.evaluateJavascript(buildReaderScript(0, scale, 0f, false, 0, view.width, view.height, measure = true)) {
                     if (continuation.isActive) continuation.resume(it?.toIntOrNull()?.takeIf { count -> count > 0 })
                 }
             }
@@ -363,35 +379,67 @@ private fun viewNext(view: WebView?, direction: Int) {
     view?.evaluateJavascript("window.paperlightMove($direction)", null)
 }
 
-private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, flip: Boolean = false, measure: Boolean = false): String = """
+private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean = false, measure: Boolean = false): String = """
 (function(){
  const palettes={paper:{bg:'#F4EBD8',fg:'#29251F',link:'#405D85'},white:{bg:'#FFFFFF',fg:'#222222',link:'#315D91'},dark:{bg:'#171717',fg:'#E5E0D5',link:'#B7C9E8'}};
  let mode=${when (themeMode) { 1 -> "'white'"; 2 -> "'dark'"; else -> "'paper'" }};
- const old=document.getElementById('paperlight-style'); if(old) old.remove();
+ if(document.getElementById('paperlight-style')) return null;
  const style=document.createElement('style'); style.id='paperlight-style';
- style.textContent=`html{height:100%!important;overflow-x:hidden!important;overflow-y:hidden!important;scroll-behavior:smooth!important;background:${'$'}{palettes[mode].bg}!important;}
- body{box-sizing:border-box!important;margin:24px!important;padding:0!important;height:calc(100vh - 48px)!important;column-width:calc(100vw - 48px)!important;column-gap:48px!important;column-fill:auto!important;overflow:visible!important;color:${'$'}{palettes[mode].fg}!important;background:transparent!important;font-size:${fontScale}em!important;line-height:1.65!important;font-family:serif!important;}
+ style.textContent=`html{margin:0!important;padding:0!important;overflow:hidden!important;background:${'$'}{palettes[mode].bg}!important;}
+ body{box-sizing:border-box!important;margin:24px!important;padding:0!important;overflow:visible!important;color:${'$'}{palettes[mode].fg}!important;background:transparent!important;font-size:${fontScale}em!important;line-height:1.65!important;font-family:serif!important;}
  p,li{orphans:2;widows:2;} img,svg,video{max-width:100%!important;max-height:90%!important;object-fit:contain!important;break-inside:avoid!important;} h1,h2,h3,h4{break-after:avoid!important;} a{color:${'$'}{palettes[mode].link}!important;}`;
  document.head.appendChild(style);
  let scrolling=$scrollMode;
+ // Give the viewport and text columns separate boxes so publisher body styles
+ // cannot change the size of either the scroll area or the page fragments.
+ const viewport=document.createElement('div');
+ const content=document.createElement('div');
+ viewport.id='paperlight-viewport';
+ content.id='paperlight-content';
+ while(document.body.firstChild) content.appendChild(document.body.firstChild);
+ viewport.appendChild(content);
+ document.body.appendChild(viewport);
  const layout=document.createElement('style');
  document.head.appendChild(layout);
  function configureMode(){
-   layout.textContent=scrolling
-     ? 'html{height:auto!important;overflow-x:hidden!important;overflow-y:auto!important} body{height:auto!important;column-width:auto!important;overflow-wrap:anywhere} img,svg,video{max-height:90vh!important}'
-     : '';
+   const ratio=window.devicePixelRatio||1;
+   const width=window.innerWidth||Math.round($widthPx/ratio);
+   const height=window.innerHeight>48?window.innerHeight:Math.round($heightPx/ratio);
+   const margin=Math.min(24,Math.floor(Math.min(width,height)/4));
+   const contentWidth=Math.max(1,width-2*margin);
+   const contentHeight=Math.max(1,height-2*margin);
+   layout.textContent=`
+     html > body{margin:0!important;padding:0!important;display:block!important;}
+     #paperlight-viewport{
+       position:fixed!important;inset:0 auto auto 0!important;
+       width:${'$'}{width}px!important;height:${'$'}{height}px!important;
+       overflow-x:hidden!important;overflow-y:${'$'}{scrolling?'auto':'hidden'}!important;
+       scrollbar-width:none;overscroll-behavior:none;
+     }
+     #paperlight-content{
+       box-sizing:content-box!important;
+       width:${'$'}{contentWidth}px!important;
+       height:${'$'}{scrolling?'auto':contentHeight+'px'}!important;
+       margin:${'$'}{margin}px!important;
+       columns:${'$'}{scrolling?'auto':contentWidth+'px 1'}!important;
+       column-gap:${'$'}{2*margin}px!important;
+       column-fill:auto!important;overflow-wrap:anywhere!important;
+     }
+     #paperlight-content img,#paperlight-content svg,#paperlight-content video{
+       max-height:${'$'}{contentHeight}px!important;
+     }
+   `;
  }
- function step(){return Math.max(1,scrolling?window.innerHeight*.9:window.innerWidth);}
+ function step(){return Math.max(1,scrolling?viewport.clientHeight*.9:viewport.clientWidth);}
  function maxOffset(){
-   const root=document.scrollingElement||document.documentElement;
-   return Math.max(0,scrolling?root.scrollHeight-window.innerHeight:root.scrollWidth-window.innerWidth);
+   return Math.max(0,scrolling?viewport.scrollHeight-viewport.clientHeight:viewport.scrollWidth-viewport.clientWidth);
  }
- function position(){return scrolling?window.scrollY:window.scrollX;}
+ function position(){return scrolling?viewport.scrollTop:viewport.scrollLeft;}
  function fraction(){return Math.min(1,Math.max(0,position()/Math.max(1,maxOffset())));}
  function total(){return Math.round(maxOffset()/step())+1;}
  function page(){return position()>=maxOffset()-1?total()-1:Math.min(total()-1,Math.round(position()/step()));}
  function moveTo(offset,behavior){
-   window.scrollTo({left:scrolling?0:offset,top:scrolling?offset:0,behavior});
+   viewport.scrollTo({left:scrolling?0:offset,top:scrolling?offset:0,behavior});
  }
  function report(){if(turning) return; Paperlight.onPage(page(),total(),fraction(),$chapterIndex,scrolling);}
  function restore(progress){
@@ -405,7 +453,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    restore(progress);
  };
  configureMode();
- if($measure) return total();
+ if($measure) return viewport.clientHeight > 48 ? total() : null;
  let flip=$flip;
  let turning=false;
  window.paperlightSetFlip=function(enabled){flip=enabled;};
@@ -420,16 +468,17 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    }
    turning=true;
    const transform=(angle)=>'perspective(950px) rotateY('+angle+'deg)';
-   const origin=(window.scrollX+(direction>0?0:window.innerWidth))+'px 50%';
+   const hinge=()=> (viewport.scrollLeft+(direction>0?0:viewport.clientWidth))+'px 50%';
+   const origin=hinge();
    try {
-     await document.body.animate([
+     await content.animate([
        {transform:'none',transformOrigin:origin,filter:'brightness(1)'},
        {transform:transform(direction*32),transformOrigin:origin,filter:'brightness(.72)'}
      ],{duration:130,easing:'ease-in'}).finished;
      moveTo(target,'instant');
-     await document.body.animate([
-       {transform:transform(-direction*27),filter:'brightness(.78)'},
-       {transform:'none',transformOrigin:origin,filter:'brightness(1)'}
+     await content.animate([
+       {transform:transform(-direction*27),transformOrigin:hinge(),filter:'brightness(.78)'},
+       {transform:'none',transformOrigin:hinge(),filter:'brightness(1)'}
      ],{duration:180,easing:'ease-out'}).finished;
    } finally {
      turning=false;
@@ -455,7 +504,18 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    restore(progress);
  };
  let reportTimer;
- window.addEventListener('scroll',()=>{
+ let lastFraction=$initialFraction;
+ const reportPosition=report;
+ report=function(){
+   if(!turning) lastFraction=fraction();
+   reportPosition();
+ };
+ window.addEventListener('resize',()=>{
+   const progress=lastFraction;
+   configureMode();
+   restore(progress);
+ });
+ viewport.addEventListener('scroll',()=>{
    clearTimeout(reportTimer);
    reportTimer=setTimeout(report,120);
  });
