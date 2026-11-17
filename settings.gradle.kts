@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PaperlightReader"
+rootProject.name = "VibeReader"
 include(":app")

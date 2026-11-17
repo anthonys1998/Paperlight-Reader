@@ -1,3 +1,7 @@
+## 0.11.1-dev
+- Rename the app to Vibe Reader and add a launcher icon with adaptive and themed variants.
+- Always show at least four full-height shelf rows, including empty libraries and search results.
+
 ## 0.11.0-dev
 - Replaced the stationary bookshelf backdrop with scrollable three-book shelf rows and a dedicated shelf-row image.
 - Added a hamburger library drawer, library counts, list view, sorting and reading-status filters.

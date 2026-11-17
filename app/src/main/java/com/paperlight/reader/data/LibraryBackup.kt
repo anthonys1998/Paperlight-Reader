@@ -84,7 +84,7 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
             } ?: error("Could not open this backup.")
             ZipFile(archive).use { zip ->
                 require(zip.size() <= 10_001) { "This backup contains too many files." }
-                val entry = requireNotNull(zip.getEntry("manifest.json")) { "This is not a Paperlight backup." }
+                val entry = requireNotNull(zip.getEntry("manifest.json")) { "This is not a Vibe Reader backup." }
                 require(entry.size in 1..(16L * 1024 * 1024)) { "The backup manifest is too large." }
                 val manifest = JSONObject(zip.getInputStream(entry).bufferedReader().use { it.readText() })
                 require(manifest.optString("format") == "paperlight-backup" && manifest.optInt("version") == 1) { "Unsupported backup format." }

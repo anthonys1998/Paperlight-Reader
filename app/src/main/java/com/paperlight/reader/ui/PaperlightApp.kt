@@ -233,7 +233,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
         drawerContent = {
             ModalDrawerSheet(Modifier.widthIn(max = 320.dp)) {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("Paperlight", Modifier.padding(24.dp), fontFamily = FontFamily.Serif,
+                Text("Vibe Reader", Modifier.padding(24.dp), fontFamily = FontFamily.Serif,
                     style = MaterialTheme.typography.headlineMedium)
                 NavigationDrawerItem(label = { Text("All books") }, selected = activeLibraryId == null,
                     icon = { Icon(Icons.Rounded.LibraryBooks, null) }, badge = { Text("${books.size}") },
@@ -269,7 +269,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Export backup") }, selected = false,
                     icon = { Icon(Icons.Rounded.Backup, null) }, onClick = {
-                        if (!libraryBusy) exportBackup.launch("Paperlight-backup.zip")
+                        if (!libraryBusy) exportBackup.launch("VibeReader-backup.zip")
                         scope.launch { drawer.close() }
                     }, modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Restore backup") }, selected = false,
@@ -396,7 +396,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                     FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(value) })
                 }
             }
-            if (filtered.isEmpty()) {
+            if (filtered.isEmpty() && listView) {
                 Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Rounded.MenuBook, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
@@ -419,8 +419,8 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                 } else {
                     val rows = filtered.chunked(3)
                     LazyColumn(Modifier.weight(1f).background(Color(0xFF61412C)), contentPadding = PaddingValues(top = 4.dp)) {
-                        items(rows, key = { row -> row.first().id }) { row ->
-                            ShelfRow(row, latest, selectedBooks,
+                        items(count = maxOf(4, rows.size), key = { index -> "shelf:$index" }) { index ->
+                            ShelfRow(rows.getOrNull(index).orEmpty(), latest, selectedBooks,
                                 onOpen = { selectedId = it.id }, onToggle = toggle)
                         }
                     }
@@ -669,7 +669,7 @@ private fun ShelfRow(
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.Bottom) {
                 repeat(3) { index ->
-                    Box(Modifier.weight(1f)) {
+                    Box(Modifier.weight(1f).aspectRatio(.74f)) {
                         books.getOrNull(index)?.let { book ->
                             BookTile(book, book.id == recentId, book.id in selectedIds, selectedIds.isNotEmpty(),
                                 onOpen = { onOpen(book) }, onToggleSelection = { onToggle(book) })
@@ -683,13 +683,13 @@ private fun ShelfRow(
             horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             repeat(3) { index ->
                 Column(Modifier.weight(1f)) {
-                    books.getOrNull(index)?.let { book ->
-                        Text("${(book.progress * 100).toInt()}%", color = Color(0xFFF4E8D5),
-                            style = MaterialTheme.typography.labelSmall)
-                        Spacer(Modifier.height(3.dp))
-                        LinearProgressIndicator(progress = { book.progress }, color = Color(0xFFDBC38E),
-                            trackColor = Color(0xFF281D15), modifier = Modifier.fillMaxWidth().height(3.dp))
-                    }
+                    val book = books.getOrNull(index)
+                    Text(book?.let { "${(it.progress * 100).toInt()}%" } ?: " ",
+                        color = Color(0xFFF4E8D5), style = MaterialTheme.typography.labelSmall)
+                    Spacer(Modifier.height(3.dp))
+                    if (book != null) LinearProgressIndicator(progress = { book.progress }, color = Color(0xFFDBC38E),
+                        trackColor = Color(0xFF281D15), modifier = Modifier.fillMaxWidth().height(3.dp))
+                    else Spacer(Modifier.height(3.dp))
                 }
             }
         }

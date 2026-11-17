@@ -81,8 +81,8 @@ internal object KindleImport {
     fun chapters(source: File, directory: File): List<EpubChapter> {
         when (unpack(source.absolutePath, directory.absolutePath)) {
             0 -> Unit
-            2 -> error("This Kindle book is DRM protected. Paperlight opens DRM-free copies.")
-            3 -> error("This Kindle book expands beyond Paperlight’s size limit.")
+            2 -> error("This Kindle book is DRM protected. Vibe Reader opens DRM-free copies.")
+            3 -> error("This Kindle book expands beyond Vibe Reader’s size limit.")
             4 -> error("Couldn’t write the local Kindle reading copy.")
             else -> error("Couldn’t read this MOBI or AZW book.")
         }

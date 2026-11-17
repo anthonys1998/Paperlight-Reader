@@ -1,8 +1,8 @@
-# Paperlight Reader (Android)
+# Vibe Reader (Android)
 
-Paperlight is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
+Vibe Reader is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.11.0-dev
+## Current milestone: 0.11.1-dev
 
 ### Changes in this milestone
 - Shelf rows contain exactly three equal-sized covers. Each row owns its backdrop and bottom plank and scrolls as one layout item.
@@ -51,7 +51,7 @@ Paperlight is an offline-first Android ebook reader project. Imported files are 
 
 ## Build
 
-Open the `PaperlightReader` folder in Android Studio. The project uses Kotlin, Jetpack Compose, Room and Android WebView. Android SDK 36, JDK 17, NDK 28.2.13676358 and CMake 3.22.1 are configured. Let Android Studio sync Gradle and install any missing SDK components.
+Open the `VibeReader` folder in Android Studio. The project uses Kotlin, Jetpack Compose, Room and Android WebView. Android SDK 36, JDK 17, NDK 28.2.13676358 and CMake 3.22.1 are configured. Let Android Studio sync Gradle and install any missing SDK components.
 
 This source snapshot has not been compiled or device-tested in this environment. Treat it as an in-progress development build, not a release APK. The project currently does not include a Gradle wrapper; Android Studio can open it using its configured Gradle installation.
 
@@ -67,7 +67,7 @@ This source snapshot has not been compiled or device-tested in this environment.
 Put this project at the repository root. GitHub Actions runs **Build Android APK**
 when you push a branch. You can also start it from **Actions → Build Android APK →
 Run workflow** once the workflow is on the default branch. After a successful run,
-download **Paperlight-debug** from the run's **Artifacts** section and extract
+download **VibeReader-debug** from the run's **Artifacts** section and extract
 `app-debug.apk`.
 
 The bundled libmobi 0.12 source is in `app/src/main/cpp/libmobi`. Its license and author notices are included there. The build leaves libmobi’s encryption support disabled.
