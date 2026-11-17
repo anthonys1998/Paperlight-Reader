@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import android.content.ContextWrapper
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -326,12 +327,23 @@ fun EpubReaderScreen(
             webView?.evaluateJavascript("window.paperlightTheme?.('$theme')", null)
         }
     }
+    val chapterHtmlCache = remember(publication) { java.util.concurrent.ConcurrentHashMap<Int, String>() }
+    LaunchedEffect(publication, chapterIndex) {
+        withContext(Dispatchers.IO) {
+            val nearby = (chapterIndex - 1..chapterIndex + 1).filter { it in publication.chapters.indices }
+            chapterHtmlCache.keys.filter { it !in nearby }.forEach { chapterHtmlCache.remove(it) }
+            for (index in nearby) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                runCatching { chapterHtmlCache.computeIfAbsent(index) { chapterHtml(publication.chapters[it]) } }
+            }
+        }
+    }
     LaunchedEffect(webView, chapterIndex, viewport.width > 0 && viewport.height > 0) {
         val view = webView ?: return@LaunchedEffect
         if (viewport.width <= 0 || viewport.height <= 0 || loadedChapterIndex == chapterIndex)
             return@LaunchedEffect
         val requestedChapter = chapterIndex
-        val html = withContext(Dispatchers.IO) { runCatching { chapterHtml(chapter) } }.getOrElse {
+        val html = withContext(Dispatchers.IO) { runCatching { chapterHtmlCache.computeIfAbsent(requestedChapter) { chapterHtml(chapter) } } }.getOrElse {
             chapterSnapshot = null
             toolMessage = it.message ?: "Could not load this section."
             return@LaunchedEffect
@@ -408,6 +420,13 @@ fun EpubReaderScreen(
                                         pageCount = total.coerceAtLeast(1)
                                         fraction = offset.coerceIn(0f, 1f)
                                         reportedChapter = sourceChapter
+                                        if (chapterSnapshot != null && !snapshotReady) {
+                                            webView?.postVisualStateCallback(sourceChapter.toLong(), object : WebView.VisualStateCallback() {
+                                                override fun onComplete(requestId: Long) {
+                                                    if (sourceChapter == chapterIndex && reportedChapter == sourceChapter) snapshotReady = true
+                                                }
+                                            })
+                                        }
                                     }
                                 }
                                 @JavascriptInterface fun onChapterTurn(sourceChapter: Int, direction: Int) {
@@ -475,7 +494,7 @@ fun EpubReaderScreen(
                                     val fraction = if (isRestoringPosition) initialChapterFraction else 0f
                                     sentFont = null
                                     val loadingChapter = chapterIndex
-                                    view.evaluateJavascript(buildReaderScript(
+                                    view.evaluateJavascript("window.paperlightInitialAppearance = ${appearance.json()};" + buildReaderScript(
                                         themeMode, appearance.size, fraction, scrollMode, loadingChapter,
                                         view.width, view.height, flip,
                                         lastChapterIndex = publication.chapters.lastIndex,
@@ -487,14 +506,6 @@ fun EpubReaderScreen(
                                             }
                                             isRestoringPosition = false
                                             initialChapterFraction = 0f
-                                            if (chapterSnapshot != null) {
-                                                view.postVisualStateCallback(loadingChapter.toLong(),
-                                                    object : WebView.VisualStateCallback() {
-                                                        override fun onComplete(requestId: Long) {
-                                                            if (chapterIndex == loadingChapter) snapshotReady = true
-                                                        }
-                                                    })
-                                            }
                                         }
                                     }
                                 }
@@ -526,18 +537,11 @@ fun EpubReaderScreen(
                     }
                 )
                 chapterSnapshot?.let { bitmap ->
-                    androidx.compose.foundation.Image(bitmap.asImageBitmap(), null,
+                    if (flip) ChapterTurnSheet(bitmap, snapshotProgress.value, chapterTurnDirection,
+                        palette.paper, Modifier.matchParentSize())
+                    else androidx.compose.foundation.Image(bitmap.asImageBitmap(), null,
                         Modifier.matchParentSize().graphicsLayer {
-                            val progress = snapshotProgress.value
-                            if (flip) {
-                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(
-                                    if (chapterTurnDirection > 0) 0f else 1f, .5f)
-                                cameraDistance = size.width * 2f
-                                rotationY = -chapterTurnDirection * 89f * progress
-                                alpha = 1f
-                            } else {
-                                translationX = -chapterTurnDirection * size.width * progress
-                            }
+                            translationX = -chapterTurnDirection * size.width * snapshotProgress.value
                         })
                 }
             }
@@ -1062,7 +1066,8 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  }
  applyDarkText();
  let scrolling=$scrollMode;
- let type={size:$fontScale,lineHeight:1.65,margins:24,font:'serif',alignment:'original',texture:'none'};
+ let type=window.paperlightInitialAppearance||{size:$fontScale,lineHeight:1.65,margins:24,font:'serif',alignment:'original',texture:'none'};
+ delete window.paperlightInitialAppearance;
  let customFontReady=false;
  let drag=0;
  let dragDirection=0;
@@ -1105,12 +1110,11 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  const coverMedia=content.querySelector?.('img,svg');
  const contentText=content.textContent||'';
  const imageOnly=coverMedia&&!contentText.trim()&&content.querySelectorAll('img,svg').length===1;
- // A curled-page turn duplicates the current chapter DOM to draw the sheet.
- // MOBI conversions often contain very large generated sections, so switch
- // those sections to the lightweight finger-following slide instead.
- const canCurl=content.getElementsByTagName('*').length<900
-   &&contentText.length<80000
-   &&content.querySelectorAll('img,svg,video').length<24;
+ // Large chapters use a bounded display list of the visible sheet. Never
+ // duplicate their entire DOM or replace the chosen curl with a slide.
+ const lightweightCurl=content.getElementsByTagName('*').length>=900
+   ||contentText.length>=80000
+   ||content.querySelectorAll('img,svg,video').length>=24;
  if(coverMedia&&(document.querySelector?.('meta[name="calibre:cover"]')||imageOnly)){
    content.classList.add('paperlight-cover');
    coverMedia.classList.add('paperlight-cover-media');
@@ -1238,7 +1242,85 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  const reducedMotion=()=>window.matchMedia('(prefers-reduced-motion: reduce)').matches;
  // Keep a real adjacent page beneath the turning sheet. Both directions use
  // the SAME right-to-left fold, with time reversed for a backward turn.
+ // Record only the text runs and media actually intersecting one page.
+ // Layout reads happen before the detached sheet is inserted, avoiding a
+ // style/layout cycle for each run and keeping animation frames DOM-free.
+ function visibleSheet(offset){
+   const original=viewport.scrollLeft;
+   const sheet=document.createElement('div');
+   const computed=window.getComputedStyle(viewport);
+   sheet.style.cssText='position:fixed;inset:0;width:'+layoutWidth+'px;height:'+layoutHeight+'px;overflow:hidden;pointer-events:none;background-color:'+palettes[mode].bg;
+   sheet.style.backgroundImage=computed.backgroundImage;
+   sheet.setAttribute('aria-hidden','true');
+   sheet.dataset.paperlightSheet='visible';
+   viewport.scrollLeft=offset;
+   const frame=viewport.getBoundingClientRect();
+   const intersects=r=>r.width>0&&r.height>0&&r.right>frame.left&&r.left<frame.left+layoutWidth&&r.bottom>frame.top&&r.top<frame.top+layoutHeight;
+   try {
+     const walker=document.createTreeWalker(content,NodeFilter.SHOW_TEXT);
+     const range=document.createRange();
+     while(walker.nextNode()){
+       const node=walker.currentNode;
+       if(!node.length||node.parentElement.closest('script,style,noscript,svg,[hidden]')) continue;
+       range.selectNodeContents(node);
+       const lines=Array.from(range.getClientRects()).filter(intersects);
+       if(!lines.length) continue;
+       const css=window.getComputedStyle(node.parentElement);
+       if(css.visibility==='hidden'||css.display==='none') continue;
+       // Text offsets advance by column and then by line within each column.
+       const compare=(index,line)=>{
+         range.setStart(node,index);range.setEnd(node,Math.min(node.length,index+1));
+         const r=range.getBoundingClientRect();
+         if(r.right<=frame.left) return -1;
+         if(r.left>=frame.left+layoutWidth) return 1;
+         return r.top<line.top-.5?-1:r.top>line.top+.5?1:0;
+       };
+       const bound=(line,after)=>{
+         let low=0,high=node.length;
+         while(low<high){
+           const mid=(low+high)>>>1;
+           const order=compare(mid,line);
+           if(order<0||(after&&order===0)) low=mid+1;else high=mid;
+         }
+         return low;
+       };
+       for(const line of lines){
+         const start=bound(line,false),end=bound(line,true);
+         if(end<=start) continue;
+         // Paint words at their measured positions. This retains justification,
+         // inline styling and indentation without asking the copy to reflow text.
+         const text=node.data.slice(start,end);
+         const words=text.matchAll(/\S+/gu);
+         for(const word of words){
+           const wordStart=start+word.index;
+           range.setStart(node,wordStart);range.setEnd(node,wordStart+word[0].length);
+           const rect=Array.from(range.getClientRects()).find(intersects);
+           if(!rect) continue;
+           const run=document.createElement('span');
+           run.textContent=word[0];
+           run.style.cssText='position:absolute;white-space:pre;margin:0;padding:0;border:0;';
+           for(const key of ['fontFamily','fontSize','fontWeight','fontStyle','fontVariant','fontStretch','letterSpacing','wordSpacing','textDecoration','textTransform','color','backgroundColor','direction','opacity','textShadow','fontFeatureSettings']) run.style[key]=css[key];
+           run.style.left=(rect.left-frame.left)+'px';run.style.top=(rect.top-frame.top)+'px';
+           run.style.lineHeight=rect.height+'px';
+           sheet.appendChild(run);
+         }
+       }
+     }
+     for(const media of content.querySelectorAll('img,svg,video')){
+       const rect=media.getBoundingClientRect();
+       if(!intersects(rect)) continue;
+       const copy=media.cloneNode(true);
+       copy.removeAttribute('id');
+       copy.querySelectorAll?.('[id]').forEach(item=>item.removeAttribute('id'));
+       copy.style.cssText='position:absolute!important;margin:0!important;padding:0!important;max-width:none!important;max-height:none!important;left:'+(rect.left-frame.left)+'px!important;top:'+(rect.top-frame.top)+'px!important;width:'+rect.width+'px!important;height:'+rect.height+'px!important;';
+       sheet.appendChild(copy);
+     }
+   } finally {viewport.scrollLeft=original;}
+   document.body.appendChild(sheet);
+   return sheet;
+ }
  function copyPage(offset){
+   if(lightweightCurl) return visibleSheet(offset);
    const copy=viewport.cloneNode(true);
    copy.removeAttribute('id');
    copy.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
@@ -1361,7 +1443,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      else {currentPage=nextPage;moveTo(currentPage*step(),'instant');report();}
      return;
    }
-   const style=flip&&canCurl?'curl':'slide';
+   const style=flip?'curl':'slide';
    const start=dragDirection===direction&&dragStyle===style?drag:0;
    if(!start) resetDrag();
    turning=true;
@@ -1656,7 +1738,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    }
    if(event.cancelable) event.preventDefault();
    if(page()+direction<0||page()+direction>=total()) return;
-   const style=flip&&canCurl?'curl':'slide';
+   const style=flip?'curl':'slide';
    if(dragStyle&&(dragDirection!==direction||dragStyle!==style)) resetDrag();
    preview(direction,Math.min(1,Math.abs(dx)/Math.max(1,viewport.clientWidth)),style);
  },{passive:false});
@@ -1729,6 +1811,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    return restoreSpot;
  }
  window.paperlightSetAppearance=function(next,font){
+   if(!font&&JSON.stringify(next)===JSON.stringify(type)) return;
    if(!font&&Object.keys(type).every(key=>type[key]===next[key])) return;
    const restoreSpot=reflow(()=>{
      type=next;

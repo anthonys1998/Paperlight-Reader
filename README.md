@@ -2,9 +2,16 @@
 
 Vibe Reader is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.11.1-dev
+## Current milestone: 0.11.2-dev
 
-### Changes in this milestone
+### Changes in 0.11.2
+- Large reflowable sections retain finger-tracked curl. Their sheet contains only measured visible text runs and media, avoiding a cloned full chapter.
+- New chapters use saved typography on their first layout. Nearby chapter HTML is cached, and chapter snapshots use a bounded bitmap fold after target pagination has reported.
+- PDF pages reuse a serialized renderer, bounded bitmap cache and adjacent-page prefetch. Controls overlay the page and provide thumbnails, a scrubber and explicit zoom reset.
+- A single gesture handler distinguishes pinch/pan from a page swipe. While zoomed, dragging pans the page.
+- Navigation regression harness passes, including the large-section no-clone case. Chromium visual checks are blocked by socket restrictions in this environment. Android compilation, actual MOBI performance and PDF gestures still require device validation.
+
+### Changes in the previous milestone
 - Shelf rows contain exactly three equal-sized covers. Each row owns its backdrop and bottom plank and scrolls as one layout item.
 - The hamburger menu provides named libraries, import, recursive folder scanning, EPUB creation, reading statistics and local backup/restore.
 - Create, rename and delete libraries. Long-press books for multiple selection, then move or delete them. A successful move opens its destination library.

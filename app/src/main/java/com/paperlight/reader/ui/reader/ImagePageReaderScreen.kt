@@ -5,10 +5,20 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.material.icons.rounded.GridView
+import com.paperlight.reader.data.PdfPageSource
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -34,7 +44,6 @@ import com.paperlight.reader.data.BookmarkStore
 import com.paperlight.reader.data.ReaderBookmark
 import java.util.UUID
 
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DarkMode
@@ -45,6 +54,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -69,10 +79,13 @@ private fun imageReaderPalette(dark: Boolean) = if (dark) ImageReaderPalette(
     Color(0xFFF9F9F5), Color(0xFF2C302E), Color(0xFFE8EBE6), Color(0xFF395F55)
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgress: (Float) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     ReaderImmersiveMode()
+    val pdfSource = remember(book.id) { if (book.format == "PDF") PdfPageSource(book.localPath) else null }
+    DisposableEffect(pdfSource) { onDispose { pdfSource?.close() } }
     val preferences = remember(context) { context.getSharedPreferences("reader", 0) }
     var position by rememberSaveable(book.id) { mutableFloatStateOf(book.progress) }
     var page by remember(book.id) { mutableStateOf<RenderedPage?>(null) }
@@ -87,6 +100,9 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     var barsVisible by rememberSaveable { mutableStateOf(false) }
     var singleTap by remember { mutableStateOf(preferences.getBoolean("singleTapBars", false)) }
     var fitWidth by remember { mutableStateOf(preferences.getBoolean("imageFitWidth", false)) }
+    var thumbnailsVisible by remember { mutableStateOf(false) }
+    var scrubPage by remember { mutableStateOf<Float?>(null) }
+    var loadAttempt by remember { mutableIntStateOf(0) }
     var settingsVisible by remember { mutableStateOf(false) }
     var notesVisible by remember { mutableStateOf(false) }
     val annotationStore = remember(context) { ReaderAnnotationStore(context) }
@@ -101,7 +117,9 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     val latestProgress by rememberUpdatedState(onProgress)
     var textPage by remember { mutableStateOf<Int?>(null) }
     var pageInput by remember { mutableStateOf("") }
-    val ready = continuous || page?.let { kotlin.math.round((it.count - 1) * position).toInt() == it.index } == true && error == null
+    val ready = (continuous && page != null && error == null) || page?.let { kotlin.math.round((it.count - 1) * position).toInt() == it.index } == true && error == null
+
+    val currentReady by rememberUpdatedState(ready)
 
     fun goTo(index: Int) {
         val current = page ?: return
@@ -109,7 +127,6 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
         turningDirection = if (target >= current.index) 1 else -1
         if (continuous) scope.launch { scrollState.scrollToItem(target) }
         position = target.toFloat() / (current.count - 1).coerceAtLeast(1)
-        onProgress(position)
     }
     fun toggleBookmark() {
         val index = if (continuous) scrollState.firstVisibleItemIndex else page?.index ?: return
@@ -119,14 +136,28 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     }
 
 
-    LaunchedEffect(book.id, if (continuous) null else position) {
+    LaunchedEffect(book.id, if (continuous) null else position, loadAttempt) {
+        error = null
         val result = withContext(Dispatchers.IO) { runCatching {
-            if (book.format == "PDF") renderPdfPage(book.localPath, position, 1800)
+            if (pdfSource != null) pdfSource.render(position, 1400)
             else renderComicPage(book, position, 2400)
         } }
         result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
         page = result.getOrNull() ?: page
         error = result.exceptionOrNull()?.let { "Couldn’t open this ${book.format} page. " + (it.message ?: "") }
+        if (result.isSuccess && !continuous) {
+            latestProgress(position)
+            val current = result.getOrThrow()
+            if (pdfSource != null) {
+                for (index in listOf(current.index + 1, current.index - 1).filter { it in 0 until current.count }) {
+                    try {
+                        pdfSource.render(index.toFloat() / (current.count - 1).coerceAtLeast(1), 1400)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) { /* A failed prefetch is retried by explicit navigation. */ }
+                }
+            }
+        }
     }
     LaunchedEffect(continuous, page?.count) {
         if (continuous && page != null) {
@@ -143,60 +174,67 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     }
     ReaderTheme(ReaderPalette(palette.paper, palette.ink, palette.panel, palette.accent), dark) {
     Box(Modifier.fillMaxSize().background(palette.paper)) {
-        Column(Modifier.fillMaxSize()) {
-        if (barsVisible) Row(Modifier.fillMaxWidth().background(palette.panel).statusBarsPadding().displayCutoutPadding().padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, "Back to library", tint = palette.ink) }
-            Text(book.title, Modifier.weight(1f), color = palette.ink, maxLines = 1,
-                overflow = TextOverflow.Ellipsis)
-            IconButton(onClick = { settingsVisible = true }) { Icon(Icons.Rounded.MoreVert, "Reader settings", tint = palette.ink) }
-        }
-        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()
+        Box(Modifier.fillMaxSize().padding(bottom = 24.dp).clipToBounds()
             .pointerInput(singleTap) {
                 detectTapGestures(onTap = { if (singleTap) barsVisible = !barsVisible },
                     onDoubleTap = { if (!singleTap) barsVisible = !barsVisible })
             }
-            .pointerInput(position, page?.index, zoom, continuous) {
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, amount ->
-                        if (!continuous && zoom == 1f && ready) {
-                            dragOffset = (dragOffset + amount).coerceIn(-size.width * .9f, size.width * .9f)
-                        }
-                    },
-                    onDragEnd = {
-                        val width = size.width.toFloat().coerceAtLeast(1f)
-                        val fraction = abs(dragOffset) / width
-                        if (fraction > .22f) {
-                            val current = page
-                            if (current != null) {
-                                turningDirection = if (dragOffset < 0) 1 else -1
-                                position = ((current.index + turningDirection).coerceIn(0, current.count - 1))
-                                    .toFloat() / (current.count - 1).coerceAtLeast(1)
-                                onProgress(position)
+            .then(if (continuous) Modifier else Modifier.pointerInput(book.id, fitWidth) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var accumulated = Offset.Zero
+                    var swiping = false
+                    var transformed = false
+                    var pressed: Boolean
+                    do {
+                        val event = awaitPointerEvent()
+                        pressed = event.changes.any { it.pressed }
+                        if (event.changes.any { it.isConsumed } && !swiping && !transformed) break
+                        val delta = event.calculatePan()
+                        val factor = event.calculateZoom()
+                        val multiple = event.changes.count { it.pressed } > 1
+                        if (multiple || zoom > 1.01f || transformed) {
+                            transformed = true
+                            swiping = false
+                            dragOffset = 0f
+                            val nextZoom = (zoom * factor).coerceIn(1f, 5f)
+                            val ratio = nextZoom / zoom
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            val focal = event.calculateCentroid(useCurrent = false)
+                            val anchored = if (focal != Offset.Unspecified) (pan + center - focal) * ratio + focal - center + delta else pan + delta
+                            zoom = nextZoom
+                            val limitX = size.width * (zoom - 1f) / 2
+                            val limitY = size.height * (zoom - 1f) / 2
+                            pan = Offset(anchored.x.coerceIn(-limitX, limitX), anchored.y.coerceIn(-limitY, limitY))
+                            event.changes.filter { it.positionChanged() }.forEach { it.consume() }
+                        } else {
+                            accumulated += delta
+                            if (abs(accumulated.x) > viewConfiguration.touchSlop && abs(accumulated.x) > abs(accumulated.y) * 1.4f) swiping = true
+                            if (swiping) {
+                                dragOffset = accumulated.x.coerceIn(-size.width * .9f, size.width * .9f)
+                                event.changes.filter { it.positionChanged() }.forEach { it.consume() }
                             }
                         }
-                        dragOffset = 0f
-                    },
-                    onDragCancel = { dragOffset = 0f }
-                )
-            }
-            .then(if (continuous) Modifier else Modifier.pointerInput(position) {
-                detectTransformGestures { _, delta, factor, _ ->
-                    zoom = (zoom * factor).coerceIn(1f, 4f)
-                    val limitX = size.width * (zoom - 1f) / 2
-                    val limitY = size.height * (zoom - 1f) / 2
-                    pan = Offset((pan.x + delta.x).coerceIn(-limitX, limitX),
-                        (pan.y + delta.y).coerceIn(-limitY, limitY))
+                    } while (pressed)
+                    if (swiping && currentReady && abs(dragOffset) > size.width * .20f) {
+                        val current = page
+                        if (current != null) goTo(current.index + if (dragOffset < 0) 1 else -1)
+                    }
+                    dragOffset = 0f
                 }
             }), contentAlignment = Alignment.Center) {
             val current = page
             when {
-                error != null -> Text(error.orEmpty(), Modifier.padding(16.dp), color = palette.ink)
+                error != null -> Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(error.orEmpty(), color = palette.ink)
+                    TextButton(onClick = { loadAttempt++ }) { Text("Retry") }
+                    TextButton(onClick = onBack) { Text("Back to library") }
+                }
                 current == null -> CircularProgressIndicator(color = palette.accent)
                 continuous -> {
                     LazyColumn(state = scrollState, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(current.count, key = { it }) { index ->
-                            ScrollImagePage(book, index, current.count)
+                            ScrollImagePage(book, index, current.count, pdfSource)
                         }
                     }
                 }
@@ -211,16 +249,15 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                         label = "image page turn"
                     ) { shown ->
                         val scroll = rememberScrollState()
-                        Box(Modifier.fillMaxSize().background(palette.paper)
-                            .then(if (fitWidth) Modifier.verticalScroll(scroll) else Modifier)) {
+                        Box(Modifier.fillMaxSize().background(palette.paper).graphicsLayer {
+                            scaleX = zoom
+                            scaleY = zoom
+                            translationX = pan.x + dragOffset
+                            translationY = pan.y
+                        }.then(if (fitWidth) Modifier.verticalScroll(scroll, enabled = zoom <= 1.01f) else Modifier)) {
                             Image(shown.bitmap.asImageBitmap(), "Page ${shown.index + 1}",
                                 (if (fitWidth) Modifier.fillMaxWidth().aspectRatio(shown.bitmap.width.toFloat() / shown.bitmap.height)
-                                else Modifier.fillMaxSize()).graphicsLayer {
-                                    scaleX = zoom
-                                    scaleY = zoom
-                                    translationX = pan.x + dragOffset
-                                    translationY = pan.y
-                                }, contentScale = if (fitWidth) ContentScale.FillWidth else ContentScale.Fit)
+                                else Modifier.fillMaxSize()), contentScale = if (fitWidth) ContentScale.FillWidth else ContentScale.Fit)
                         }
                     }
                 }
@@ -244,16 +281,34 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                 }
             }
         }
-        if (barsVisible) page?.let { current ->
+        if (!ready && page != null && error == null) CircularProgressIndicator(
+            Modifier.align(Alignment.Center).size(32.dp), color = palette.accent)
+        if (barsVisible) Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().shadow(8.dp).background(palette.panel).statusBarsPadding().displayCutoutPadding().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, "Back to library", tint = palette.ink) }
+            Text(book.title, Modifier.weight(1f), color = palette.ink, maxLines = 1,
+                overflow = TextOverflow.Ellipsis)
+            IconButton(onClick = { settingsVisible = true }) { Icon(Icons.Rounded.MoreVert, "Reader settings", tint = palette.ink) }
+        }
+        if (zoom > 1.01f && !continuous) FilledTonalButton(
+            onClick = { zoom = 1f; pan = Offset.Zero },
+            modifier = Modifier.align(Alignment.CenterEnd).padding(12.dp)) { Text("${(zoom * 100).toInt()}% · Reset") }
+        if (barsVisible) Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().shadow(12.dp).background(palette.panel)) {
+        page?.let { current ->
             val requested = kotlin.math.round((current.count - 1) * position).toInt()
-            val ready = error != null || requested == current.index
+            Slider(value = scrubPage ?: requested.toFloat(),
+                onValueChange = { scrubPage = it },
+                onValueChangeFinished = { scrubPage?.let { goTo(it.toInt()) }; scrubPage = null },
+                valueRange = 0f..(current.count - 1).coerceAtLeast(1).toFloat(),
+                enabled = current.count > 1 && error == null,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp))
             Row(Modifier.fillMaxWidth().background(palette.panel).padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 IconButton(enabled = ready && requested > 0, onClick = { goTo(requested - 1) }) {
                     Icon(Icons.Rounded.ChevronLeft, "Previous page", tint = palette.ink)
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${requested + 1} / ${current.count}", color = palette.ink,
+                Column(Modifier.clickable { thumbnailsVisible = true }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("${(scrubPage?.toInt() ?: requested) + 1} / ${current.count}", color = palette.ink,
                         style = MaterialTheme.typography.labelLarge)
                     Text("${(position * 100).toInt()}%", color = palette.ink,
                         style = MaterialTheme.typography.labelSmall)
@@ -263,17 +318,18 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                 }
             }
         }
-        if (barsVisible) Row(Modifier.fillMaxWidth().background(palette.panel).navigationBarsPadding(),
+        Row(Modifier.fillMaxWidth().background(palette.panel).navigationBarsPadding(),
             horizontalArrangement = Arrangement.SpaceEvenly) {
             IconButton(enabled = ready, onClick = {
                 val index = if (continuous) scrollState.firstVisibleItemIndex else page?.index ?: return@IconButton
                 editingNote = ReaderAnnotation(UUID.randomUUID().toString(), index, 0, 0, "Page ${index + 1}", "")
             }) { Icon(Icons.Rounded.NoteAdd, "Add page note") }
+            IconButton(onClick = { thumbnailsVisible = true }) { Icon(Icons.Rounded.GridView, "Browse pages") }
             IconButton(onClick = { notesVisible = true }) { Icon(Icons.Rounded.Notes, "Notes and bookmarks") }
             IconButton(enabled = ready, onClick = { toggleBookmark() }) {
                 Icon(if (bookmarks.any { it.chapter == (if (continuous) scrollState.firstVisibleItemIndex else page?.index) }) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Toggle bookmark")
             }
-            IconButton(onClick = { fitWidth = !fitWidth; preferences.edit().putBoolean("imageFitWidth", fitWidth).apply() }) {
+            IconButton(onClick = { fitWidth = !fitWidth; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageFitWidth", fitWidth).apply() }) {
                 Icon(Icons.Rounded.AspectRatio, if (fitWidth) "Fit whole page" else "Fit page width")
             }
             IconButton(onClick = { dark = !dark; preferences.edit().putInt("lightDarkPalette", if (dark) 1 else 0).apply() }) {
@@ -290,9 +346,30 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
             Text("${(position * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = palette.ink)
         }
     }
+    if (thumbnailsVisible && page != null) ModalBottomSheet(onDismissRequest = { thumbnailsVisible = false }, containerColor = palette.panel) {
+        Text("Pages", Modifier.padding(horizontal = 20.dp, vertical = 12.dp), style = MaterialTheme.typography.titleLarge)
+        val count = page!!.count
+        val initial = kotlin.math.round(position * (count - 1)).toInt()
+        val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState(initialFirstVisibleItemIndex = (initial / 3) * 3)
+        LazyVerticalGrid(columns = GridCells.Fixed(3), state = gridState,
+            modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
+            contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            items(count) { index ->
+                Column(Modifier.clickable { goTo(index); thumbnailsVisible = false }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    PageThumbnail(book, index, count, pdfSource, index == initial)
+                    Text("${index + 1}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
+                }
+            }
+        }
+    }
     if (settingsVisible) AlertDialog(onDismissRequest = { settingsVisible = false }, title = { Text("Reader settings") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Page fit", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = !fitWidth, onClick = { fitWidth = false; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageFitWidth", false).apply() }, label = { Text("Whole page") })
+                    FilterChip(selected = fitWidth, onClick = { fitWidth = true; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageFitWidth", true).apply() }, label = { Text("Page width") })
+                }
                 if (book.format == "PDF" && android.os.Build.VERSION.SDK_INT >= 35) TextButton(onClick = {
                     textPage = if (continuous) scrollState.firstVisibleItemIndex else page?.index
                     settingsVisible = false
@@ -304,8 +381,8 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                 }
                 Text("Reading mode", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = !continuous, onClick = { continuous = false; preferences.edit().putBoolean("imageContinuous", false).apply() }, label = { Text("Pages") })
-                    FilterChip(selected = continuous, onClick = { continuous = true; preferences.edit().putBoolean("imageContinuous", true).apply() }, label = { Text("Scroll") })
+                    FilterChip(selected = !continuous, onClick = { continuous = false; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageContinuous", false).apply() }, label = { Text("Pages") })
+                    FilterChip(selected = continuous, onClick = { continuous = true; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageContinuous", true).apply() }, label = { Text("Scroll") })
                 }
                 Text("Paper texture", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -360,14 +437,14 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
 }
 
 @Composable
-private fun ScrollImagePage(book: BookEntity, index: Int, count: Int) {
+private fun ScrollImagePage(book: BookEntity, index: Int, count: Int, pdfSource: PdfPageSource?) {
     var page by remember(book.id, index) { mutableStateOf<RenderedPage?>(null) }
     var error by remember(book.id, index) { mutableStateOf<String?>(null) }
     LaunchedEffect(book.id, index) {
         try {
             page = withContext(Dispatchers.IO) {
                 val fraction = index.toFloat() / (count - 1).coerceAtLeast(1)
-                if (book.format == "PDF") renderPdfPage(book.localPath, fraction, 1200)
+                if (pdfSource != null) pdfSource.render(fraction, 1400)
                 else renderComicPage(book, fraction, 1600)
             }
         } catch (cancelled: CancellationException) {
@@ -379,5 +456,27 @@ private fun ScrollImagePage(book: BookEntity, index: Int, count: Int) {
         Modifier.fillMaxWidth().aspectRatio(rendered.bitmap.width.toFloat() / rendered.bitmap.height), contentScale = ContentScale.FillWidth)
     else Box(Modifier.fillMaxWidth().height(240.dp), contentAlignment = Alignment.Center) {
         if (error == null) CircularProgressIndicator() else Text(error.orEmpty(), Modifier.padding(16.dp))
+    }
+}
+
+@Composable
+private fun PageThumbnail(book: BookEntity, index: Int, count: Int, pdfSource: PdfPageSource?, selected: Boolean) {
+    var thumbnail by remember(book.id, index) { mutableStateOf<RenderedPage?>(null) }
+    var failed by remember { mutableStateOf(false) }
+    LaunchedEffect(book.id, index) {
+        try {
+            val fraction = index.toFloat() / (count - 1).coerceAtLeast(1)
+            thumbnail = withContext(Dispatchers.IO) {
+                pdfSource?.render(fraction, 220) ?: renderComicPage(book, fraction, 220)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) { failed = true }
+    }
+    Box(Modifier.fillMaxWidth().aspectRatio(.7f)
+        .border(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
+        .background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
+        thumbnail?.let { Image(it.bitmap.asImageBitmap(), "Page ${index + 1}", Modifier.fillMaxSize().padding(4.dp), contentScale = ContentScale.Fit) }
+            ?: if (failed) Text("Unavailable", style = MaterialTheme.typography.labelSmall) else CircularProgressIndicator(Modifier.size(20.dp))
     }
 }

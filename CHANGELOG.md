@@ -1,3 +1,13 @@
+## 0.11.2-dev
+- Apply saved typography before first chapter layout and skip duplicate settings updates.
+- Remove forced slide fallback for large MOBI/EPUB sections. Curl sheets use measured visible text runs and media instead of a full-document clone for those sections.
+- Cache adjacent chapter HTML and start the chapter fold after target pagination and a WebView visual-state callback.
+- Use a bitmap fold for chapter boundaries, with full-opacity paper and directional shading.
+- Refine PDF/comic controls with overlay menus, page thumbnails, a scrubber and a zoom reset.
+- Consolidate pan, pinch and swipe recognition to prevent accidental page turns while zoomed.
+- Reuse one PDF renderer per open document, serialize access, cache page bitmaps and prefetch adjacent pages.
+- Navigation regression tests pass. Visual/Android performance validation remains pending.
+
 ## 0.11.1-dev
 - Rename the app to Vibe Reader and add a launcher icon with adaptive and themed variants.
 - Always show at least four full-height shelf rows, including empty libraries and search results.
