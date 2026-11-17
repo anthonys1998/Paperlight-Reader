@@ -20,8 +20,8 @@ android {
         applicationId = "com.paperlight.reader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 23
-        versionName = "0.10.7-dev"
+        versionCode = 24
+        versionName = "0.10.8-dev"
     }
 
     buildFeatures {
@@ -29,6 +29,7 @@ android {
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -36,6 +37,10 @@ android {
 }
 
 dependencies {
+    implementation(libs.jsoup)
+    implementation(libs.epub4j.core) {
+        exclude(group = "xmlpull", module = "xmlpull")
+    }
     implementation("com.github.junrar:junrar:8.1.2")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -52,6 +57,7 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.androidx.datastore.preferences)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 
 
     debugImplementation(libs.androidx.compose.ui.tooling)

@@ -17,5 +17,6 @@ data class BookEntity(
     val progress: Float = 0f,
     val status: String = "IMPORTED",
     @ColumnInfo(name = "chapterPage", defaultValue = "0") val bookPage: Int = 0,
-    @ColumnInfo(name = "chapterPageCount", defaultValue = "0") val bookPageCount: Int = 0
+    @ColumnInfo(name = "chapterPageCount", defaultValue = "0") val bookPageCount: Int = 0,
+    @ColumnInfo(defaultValue = "'default'") val libraryId: String = "default"
 )

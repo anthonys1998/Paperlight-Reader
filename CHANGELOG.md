@@ -1,3 +1,9 @@
+## 0.10.8-dev
+- Make the bookshelf artwork the library's full-screen background and keep cover shadows visible over the shelves.
+- Add named libraries, per-library filtering, long-press multi-selection, bulk move and bulk delete.
+- Add a coroutine based web novel importer with Jsoup chapter discovery and epub4j EPUB generation; expose URL and optional CSS selectors in the library.
+- Replace synchronous full-size WebView drawing at chapter boundaries with asynchronous, half-resolution PixelCopy capture to reduce shared EPUB/MOBI turn stalls.
+
 ## 0.10.7-dev
 - Replace the library's flat background with a warm, empty bookshelf image and add depth shadows to cover art.
 - Use the finger-following slide transition for unusually large chapters instead of cloning their full DOM for a curl, reducing page-turn work on large MOBI/AZW sections.

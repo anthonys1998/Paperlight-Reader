@@ -3,6 +3,9 @@ package com.paperlight.reader.ui.reader
 import android.app.Activity
 import android.os.BatteryManager
 import android.text.format.DateFormat
+import android.graphics.Rect
+import android.os.Handler
+import android.os.Looper
 import kotlinx.coroutines.delay
 import android.content.ContextWrapper
 import androidx.core.view.WindowCompat
@@ -172,6 +175,7 @@ fun EpubReaderScreen(
     var bookmarks by remember(book.id) { mutableStateOf(bookmarkStore.read(book.id)) }
     var chapterTurnDirection by remember(book.id) { mutableIntStateOf(0) }
     var chapterSnapshot by remember(book.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var chapterSnapshotPending by remember(book.id) { mutableStateOf(false) }
     var snapshotReady by remember(book.id) { mutableStateOf(false) }
     val snapshotProgress = remember(book.id) { androidx.compose.animation.core.Animatable(0f) }
     LaunchedEffect(snapshotReady, chapterSnapshot) {
@@ -301,6 +305,21 @@ fun EpubReaderScreen(
             reportedChapter = -1
             chapterIndex = target
         }
+    }
+
+    fun commitChapterTurn(source: Int, target: Int, direction: Int, snapshot: android.graphics.Bitmap?) {
+        if (source != chapterIndex) {
+            snapshot?.recycle()
+            chapterSnapshotPending = false
+            return
+        }
+        chapterSnapshotPending = false
+        chapterSnapshot = snapshot
+        chapterTurnDirection = direction
+        initialChapterFraction = if (direction < 0) 1f else 0f
+        isRestoringPosition = true
+        reportedChapter = -1
+        chapterIndex = target
     }
 
     fun lookup(text: String) {
@@ -443,25 +462,61 @@ fun EpubReaderScreen(
                                 }
                                 @JavascriptInterface fun onChapterTurn(sourceChapter: Int, direction: Int) {
                                     mainView.post {
-                                        if (sourceChapter != chapterIndex || chapterSnapshot != null || direction !in listOf(-1, 1)) return@post
+                                        if (sourceChapter != chapterIndex || chapterSnapshot != null || chapterSnapshotPending || direction !in listOf(-1, 1)) return@post
                                         val target = chapterIndex + direction
                                         if (target !in publication.chapters.indices) return@post
                                         val view = webView
-                                        if (!scrollMode && view != null && view.width > 0 && view.height > 0 &&
+                                        val animatorScale = runCatching {
                                             android.provider.Settings.Global.getFloat(context.contentResolver,
-                                                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f) {
-                                            chapterSnapshot = runCatching {
-                                                android.graphics.Bitmap.createBitmap(view.width, view.height,
-                                                    android.graphics.Bitmap.Config.ARGB_8888).also { bitmap ->
-                                                    view.draw(android.graphics.Canvas(bitmap))
+                                                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+                                        }.getOrDefault(1f)
+                                        val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
+                                            .filterIsInstance<Activity>().firstOrNull()
+                                        if (!scrollMode && view != null && view.isAttachedToWindow &&
+                                            view.width > 0 && view.height > 0 && animatorScale > 0f && activity != null) {
+                                            val location = IntArray(2)
+                                            view.getLocationInWindow(location)
+                                            val root = activity.window.decorView
+                                            val left = location[0].coerceAtLeast(0)
+                                            val top = location[1].coerceAtLeast(0)
+                                            val right = (location[0] + view.width).coerceAtMost(root.width)
+                                            val bottom = (location[1] + view.height).coerceAtMost(root.height)
+                                            if (right > left && bottom > top) {
+                                                val snapshot = runCatching {
+                                                    android.graphics.Bitmap.createBitmap(
+                                                        ((right - left) / 2).coerceAtLeast(1),
+                                                        ((bottom - top) / 2).coerceAtLeast(1),
+                                                        android.graphics.Bitmap.Config.RGB_565
+                                                    )
+                                                }.getOrNull()
+                                                if (snapshot != null) {
+                                                    chapterSnapshotPending = true
+                                                    try {
+                                                        android.view.PixelCopy.request(
+                                                            activity.window,
+                                                            Rect(left, top, right, bottom),
+                                                            snapshot,
+                                                            { result ->
+                                                                mainView.post {
+                                                                    if (result == android.view.PixelCopy.SUCCESS) {
+                                                                        commitChapterTurn(sourceChapter, target, direction, snapshot)
+                                                                    } else {
+                                                                        snapshot.recycle()
+                                                                        commitChapterTurn(sourceChapter, target, direction, null)
+                                                                    }
+                                                                }
+                                                            },
+                                                            Handler(Looper.getMainLooper())
+                                                        )
+                                                        return@post
+                                                    } catch (_: Exception) {
+                                                        snapshot.recycle()
+                                                        chapterSnapshotPending = false
+                                                    }
                                                 }
-                                            }.getOrNull()
+                                            }
                                         }
-                                        chapterTurnDirection = direction
-                                        initialChapterFraction = if (direction < 0) 1f else 0f
-                                        isRestoringPosition = true
-                                        reportedChapter = -1
-                                        chapterIndex = target
+                                        commitChapterTurn(sourceChapter, target, direction, null)
                                     }
                                 }
                             }, "Paperlight")

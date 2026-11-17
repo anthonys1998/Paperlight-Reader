@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [BookEntity::class], version = 3, exportSchema = false)
+@Database(entities = [BookEntity::class, LibraryEntity::class], version = 4, exportSchema = false)
 abstract class BookDatabase : RoomDatabase() {
     abstract fun bookDao(): BookDao
 
@@ -25,6 +25,14 @@ abstract class BookDatabase : RoomDatabase() {
             }
         }
 
+        private val addLibraries = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `libraries` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("INSERT OR IGNORE INTO `libraries` (`id`, `name`, `createdAt`) VALUES ('default', 'My Library', 0)")
+                db.execSQL("ALTER TABLE `books` ADD COLUMN `libraryId` TEXT NOT NULL DEFAULT 'default'")
+            }
+        }
+
         @Volatile private var INSTANCE: BookDatabase? = null
 
         fun getInstance(context: Context): BookDatabase =
@@ -33,7 +41,7 @@ abstract class BookDatabase : RoomDatabase() {
                     context.applicationContext,
                     BookDatabase::class.java,
                     "paperlight-library.db"
-                ).addMigrations(addChapterPage, resetChapterCounts).build().also { INSTANCE = it }
+                ).addMigrations(addChapterPage, resetChapterCounts, addLibraries).build().also { INSTANCE = it }
             }
     }
 }
