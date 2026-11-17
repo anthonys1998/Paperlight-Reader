@@ -1098,7 +1098,14 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  document.body.appendChild(fold);
  for(const image of content.querySelectorAll?.('img[loading="lazy"]')||[]) image.loading='eager';
  const coverMedia=content.querySelector?.('img,svg');
- const imageOnly=coverMedia&&!content.textContent?.trim()&&content.querySelectorAll('img,svg').length===1;
+ const contentText=content.textContent||'';
+ const imageOnly=coverMedia&&!contentText.trim()&&content.querySelectorAll('img,svg').length===1;
+ // A curled-page turn duplicates the current chapter DOM to draw the sheet.
+ // MOBI conversions often contain very large generated sections, so switch
+ // those sections to the lightweight finger-following slide instead.
+ const canCurl=content.getElementsByTagName('*').length<900
+   &&contentText.length<80000
+   &&content.querySelectorAll('img,svg,video').length<24;
  if(coverMedia&&(document.querySelector?.('meta[name="calibre:cover"]')||imageOnly)){
    content.classList.add('paperlight-cover');
    coverMedia.classList.add('paperlight-cover-media');
@@ -1349,7 +1356,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      else {currentPage=nextPage;moveTo(currentPage*step(),'instant');report();}
      return;
    }
-   const style=flip?'curl':'slide';
+   const style=flip&&canCurl?'curl':'slide';
    const start=dragDirection===direction&&dragStyle===style?drag:0;
    if(!start) resetDrag();
    turning=true;
@@ -1644,7 +1651,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    }
    if(event.cancelable) event.preventDefault();
    if(page()+direction<0||page()+direction>=total()) return;
-   const style=flip?'curl':'slide';
+   const style=flip&&canCurl?'curl':'slide';
    if(dragStyle&&(dragDirection!==direction||dragStyle!==style)) resetDrag();
    preview(direction,Math.min(1,Math.abs(dx)/Math.max(1,viewport.clientWidth)),style);
  },{passive:false});

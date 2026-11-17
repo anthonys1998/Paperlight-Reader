@@ -7,8 +7,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import com.paperlight.reader.data.BookArtwork
 import com.paperlight.reader.ui.reader.ImagePageReaderScreen
 import androidx.compose.foundation.combinedClickable
@@ -138,6 +142,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
         it.title.contains(search, ignoreCase = true) || it.author.contains(search, ignoreCase = true)
     }
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = { Text("My Library", fontFamily = FontFamily.Serif) },
@@ -151,13 +156,28 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                     IconButton(onClick = { import.launch(arrayOf("*/*")) }) {
                         Icon(Icons.Rounded.Add, "Import books")
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color(0xE92E241E),
+                    titleContentColor = Color(0xFFFFF4E3),
+                    actionIconContentColor = Color(0xFFFFF4E3)
+                )
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = { Spacer(Modifier.navigationBarsPadding()) }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp)) {
+        Box(Modifier.fillMaxSize()) {
+            Image(
+                painter = painterResource(com.paperlight.reader.R.drawable.library_bookshelf),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(Modifier.fillMaxSize().background(
+                Brush.verticalGradient(listOf(Color(0x180D0906), Color.Transparent, Color(0x220D0906)))
+            ))
+            Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp)) {
             if (searchVisible) OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
@@ -174,12 +194,13 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                     columns = GridCells.Adaptive(94.dp),
                     contentPadding = PaddingValues(vertical = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                    verticalArrangement = Arrangement.spacedBy(15.dp)
                 ) {
                     items(filtered, key = { it.id }) { book ->
                         BookTile(book, book.id == latest, { selectedId = book.id }, { pendingRemoval = book })
                     }
                 }
+            }
             }
         }
     }
@@ -238,8 +259,11 @@ private fun BookTile(book: BookEntity, recent: Boolean, onOpen: () -> Unit, onRe
     }
     val covers = listOf(0xFF344B53, 0xFF526048, 0xFF794942, 0xFF695474, 0xFF4F586E)
     Column {
+        val coverShape = RoundedCornerShape(4.dp)
         androidx.compose.foundation.layout.Box(
             Modifier.fillMaxWidth().aspectRatio(.74f)
+                .shadow(12.dp, coverShape, clip = false)
+                .clip(coverShape)
                 .background(Color(covers[Math.floorMod(book.id.hashCode(), covers.size)]))
                 .combinedClickable(onClick = onOpen, onLongClick = onRemove, onLongClickLabel = "Remove book")
         ) {
@@ -258,12 +282,14 @@ private fun BookTile(book: BookEntity, recent: Boolean, onOpen: () -> Unit, onRe
         }
         Text(
             "${(book.progress * 100).toInt()}%",
-            style = MaterialTheme.typography.labelSmall, maxLines = 1
+            style = MaterialTheme.typography.labelSmall, maxLines = 1,
+            color = Color(0xFF2E241E), modifier = Modifier.padding(top = 3.dp)
         )
-        LinearProgressIndicator(progress = { book.progress }, modifier = Modifier.fillMaxWidth().height(3.dp))
-        Spacer(Modifier.height(4.dp))
-        Box(Modifier.fillMaxWidth().height(6.dp).background(
-            Brush.verticalGradient(listOf(Color(0xFFB77E49), Color(0xFF674024)))
-        ))
+        LinearProgressIndicator(
+            progress = { book.progress },
+            color = Color(0xFF584033),
+            trackColor = Color(0x883A2A20),
+            modifier = Modifier.fillMaxWidth().height(3.dp)
+        )
     }
 }

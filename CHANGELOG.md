@@ -1,3 +1,7 @@
+## 0.10.7-dev
+- Replace the library's flat background with a warm, empty bookshelf image and add depth shadows to cover art.
+- Use the finger-following slide transition for unusually large chapters instead of cloning their full DOM for a curl, reducing page-turn work on large MOBI/AZW sections.
+
 ## 0.8.3-dev
 - Replace the narrow fold overlay with layered page content, a reflected sheet back, curved silhouette and fold shading. Backward turns reverse the forward geometry.
 - Claim horizontal touch gestures in page mode and update slide position continuously. Preserve text selection and scroll mode.

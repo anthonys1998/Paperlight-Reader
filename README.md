@@ -2,7 +2,7 @@
 
 Paperlight is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.10.2-dev
+## Current milestone: 0.10.6-dev
 
 ### Implemented in this source snapshot
 - Native Jetpack Compose bookshelf with equal-sized covers, title search, a last-read marker, warm light and dark palettes, and per-book progress.
