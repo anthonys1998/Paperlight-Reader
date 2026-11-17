@@ -1,3 +1,7 @@
+# 0.5.1-dev
+
+- Give EPUB columns the full reader height and use the same layout for whole-book page counts.
+
 # 0.5.0-dev
 
 - Added a page flip and a simple slide option in EPUB Pages mode.
