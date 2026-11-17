@@ -17,6 +17,11 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.MenuBook
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -46,6 +51,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     val snackbar = remember { SnackbarHostState() }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var search by rememberSaveable { mutableStateOf("") }
+    var searchVisible by rememberSaveable { mutableStateOf(false) }
     var pendingRemoval by remember { mutableStateOf<BookEntity?>(null) }
     var folder by remember { mutableStateOf<Uri?>(null) }
     var candidates by remember { mutableStateOf<List<FolderBook>?>(null) }
@@ -66,23 +72,31 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
         val tree = folder ?: return@LaunchedEffect
         try {
             val found = withContext(Dispatchers.IO) {
-                val directory = DocumentsContract.getTreeDocumentId(tree)
-                val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, directory)
                 val columns = arrayOf(
                     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                     DocumentsContract.Document.COLUMN_MIME_TYPE
                 )
-                context.contentResolver.query(children, columns, null, null, null)?.use { cursor ->
-                    buildList {
+                val result = mutableListOf<FolderBook>()
+                val pending = ArrayDeque(DocumentsContract.getTreeDocumentId(tree))
+                val visited = mutableSetOf<String>()
+                while (pending.isNotEmpty()) {
+                    val directory = pending.removeFirst()
+                    if (!visited.add(directory)) continue
+                    val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, directory)
+                    context.contentResolver.query(children, columns, null, null, null)?.use { cursor ->
                         while (cursor.moveToNext()) {
+                            val id = cursor.getString(0) ?: continue
                             val name = cursor.getString(1) ?: continue
-                            if (cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR ||
-                                BookRepository.formatOf(name) == null) continue
-                            add(FolderBook(DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0)), name))
+                            if (cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) {
+                                pending.add(id)
+                            } else if (BookRepository.formatOf(name) != null) {
+                                result += FolderBook(DocumentsContract.buildDocumentUriUsingTree(tree, id), name)
+                            }
                         }
-                    }.sortedBy { it.name.lowercase() }
-                } ?: error("Could not read this folder")
+                    } ?: error("Could not read this folder")
+                }
+                result.sortedBy { it.name.lowercase() }
             }
             checked = emptySet()
             candidates = found
@@ -122,21 +136,27 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
         it.title.contains(search, ignoreCase = true) || it.author.contains(search, ignoreCase = true)
     }
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Paperlight", fontFamily = FontFamily.Serif) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("My Library", fontFamily = FontFamily.Serif) },
+                actions = {
+                    IconButton(onClick = { searchVisible = !searchVisible; if (!searchVisible) search = "" }) {
+                        Icon(if (searchVisible) Icons.Rounded.Close else Icons.Rounded.Search, "Search books")
+                    }
+                    IconButton(onClick = { scan.launch(null) }, enabled = folder == null) {
+                        Icon(Icons.Rounded.FolderOpen, "Scan folder")
+                    }
+                    IconButton(onClick = { import.launch(arrayOf("*/*")) }) {
+                        Icon(Icons.Rounded.Add, "Import books")
+                    }
+                }
+            )
+        },
         snackbarHost = { SnackbarHost(snackbar) },
-        bottomBar = {
-            Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Button(onClick = { import.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Import books")
-                }
-                OutlinedButton(onClick = { scan.launch(null) }, modifier = Modifier.fillMaxWidth(), enabled = folder == null) {
-                    Text(if (folder == null) "Scan folder" else "Scanning…")
-                }
-            }
-        }
+        bottomBar = { Spacer(Modifier.navigationBarsPadding()) }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp)) {
-            OutlinedTextField(
+            if (searchVisible) OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
                 label = { Text("Search your library") },
@@ -145,7 +165,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
             )
             if (filtered.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(if (books.isEmpty()) "Import a book to start reading." else "No matching books.")
+                    Text(if (books.isEmpty()) "Add books with + or scan a folder." else "No matching books.")
                 }
             } else {
                 LazyVerticalGrid(
