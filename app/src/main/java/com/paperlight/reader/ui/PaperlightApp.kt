@@ -78,8 +78,8 @@ import com.paperlight.reader.ui.reader.EpubReaderScreen
 import com.paperlight.reader.webnovel.WebNovelScrapeOptions
 import com.paperlight.reader.webnovel.WebNovelEpubUtility
 import com.paperlight.reader.webnovel.WebNovelPreview
-import com.paperlight.reader.ai.GeminiAiClient
-import com.paperlight.reader.ai.GeminiApiKeyStore
+import com.paperlight.reader.ai.GroqAiClient
+import com.paperlight.reader.ai.GroqApiKeyStore
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -179,7 +179,7 @@ private fun PaperlightAppContent(
     var libraryError by remember { mutableStateOf<String?>(null) }
     var showStatistics by remember { mutableStateOf(false) }
     var showAccessibility by remember { mutableStateOf(false) }
-    var showGeminiApiKeyScreen by remember { mutableStateOf(false) }
+    var showGroqApiKeyScreen by remember { mutableStateOf(false) }
     var pendingRestore by remember { mutableStateOf<Uri?>(null) }
     var showMoreActions by remember { mutableStateOf(false) }
     var showLibraryMenu by remember { mutableStateOf(false) }
@@ -513,8 +513,8 @@ private fun PaperlightAppContent(
                 NavigationDrawerItem(label = { Text("App settings") }, selected = false,
                     icon = { Icon(Icons.Rounded.Accessibility, null) }, onClick = { showAccessibility = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
-                NavigationDrawerItem(label = { Text("Gemini AI key") }, selected = false,
-                    icon = { Icon(Icons.Rounded.Key, null) }, onClick = { showGeminiApiKeyScreen = true; scope.launch { drawer.close() } },
+                NavigationDrawerItem(label = { Text("Groq AI key") }, selected = false,
+                    icon = { Icon(Icons.Rounded.Key, null) }, onClick = { showGroqApiKeyScreen = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Export backup") }, selected = false,
                     icon = { Icon(Icons.Rounded.Backup, null) }, onClick = {
@@ -848,7 +848,7 @@ private fun PaperlightAppContent(
             confirmButton = { TextButton(onClick = { showAccessibility = false }) { Text("Done") } }
         )
     }
-    if (showGeminiApiKeyScreen) GeminiApiKeyScreen(onClose = { showGeminiApiKeyScreen = false })
+    if (showGroqApiKeyScreen) GroqApiKeyScreen(onClose = { showGroqApiKeyScreen = false })
     pendingRestore?.let { uri ->
         AlertDialog(onDismissRequest = { pendingRestore = null }, title = { Text("Restore backup?") },
             text = { Text("Books, libraries, reading progress, notes and bookmarks will be imported. Books already present will be skipped.") },
@@ -1105,12 +1105,12 @@ private fun PaperlightAppContent(
                             enabled = canCheckSite,
                             onClick = {
                                 aiScrapeError = null
-                                if (!GeminiApiKeyStore(context).hasKey()) showGeminiApiKeyScreen = true
+                                if (!GroqApiKeyStore(context).hasKey()) showGroqApiKeyScreen = true
                                 else scope.launch {
                                     aiScrapeBusy = true
                                     try {
                                         val suggestion = withContext(Dispatchers.IO) {
-                                            GeminiAiClient(context).suggestScrapeConfiguration(novelUrl, sampleChapterUrl, options)
+                                            GroqAiClient(context).suggestScrapeConfiguration(novelUrl, sampleChapterUrl, options)
                                         }
                                         chapterPreview = null
                                         previewError = null
@@ -1131,9 +1131,9 @@ private fun PaperlightAppContent(
                             if (aiScrapeBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                             else Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            Text(if (aiScrapeBusy) "Analyzing site…" else "Suggest selectors with Gemini")
+                            Text(if (aiScrapeBusy) "Analyzing site…" else "Suggest selectors with Groq")
                         }
-                        Text("A sanitized sample from the table of contents and one chapter is sent to Gemini. Review the selectors before downloading.",
+                        Text("A sanitized sample from the table of contents and one chapter is sent to Groq. Review the selectors before downloading.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         aiScrapeError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                     }

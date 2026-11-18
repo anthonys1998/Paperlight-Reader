@@ -19,9 +19,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.data.ReaderAnnotation
-import com.paperlight.reader.ai.GeminiAiClient
-import com.paperlight.reader.ai.GeminiApiKeyStore
-import com.paperlight.reader.ui.GeminiApiKeyScreen
+import com.paperlight.reader.ai.GroqAiClient
+import com.paperlight.reader.ai.GroqApiKeyStore
+import com.paperlight.reader.ui.GroqApiKeyScreen
 import com.paperlight.reader.epub.EpubChapter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -129,8 +129,8 @@ internal fun ReaderNotesDialog(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
-    val keyStore = remember(context) { GeminiApiKeyStore(context) }
-    val aiClient = remember(context) { GeminiAiClient(context) }
+    val keyStore = remember(context) { GroqApiKeyStore(context) }
+    val aiClient = remember(context) { GroqAiClient(context) }
     var hasApiKey by remember { mutableStateOf(keyStore.hasKey()) }
     var showApiKeyScreen by remember { mutableStateOf(false) }
     var summary by remember(book.id) { mutableStateOf<String?>(null) }
@@ -185,10 +185,10 @@ internal fun ReaderNotesDialog(
                                 }
                             ) {
                                 if (summarizing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                                else Text("Summarize my notes with Gemini")
+                                else Text("Summarize my notes with Groq")
                             }
                             Text(
-                                "Only your written notes are sent to Gemini for this summary; highlighted book text is excluded.",
+                                "Only your written notes are sent to Groq for this summary; highlighted book text is excluded.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = palette.ink.copy(alpha = .72f)
                             )
@@ -243,7 +243,7 @@ internal fun ReaderNotesDialog(
             }
         }
     }
-    if (showApiKeyScreen) GeminiApiKeyScreen(
+    if (showApiKeyScreen) GroqApiKeyScreen(
         onClose = { showApiKeyScreen = false },
         onSaved = { hasApiKey = keyStore.hasKey() },
     )
