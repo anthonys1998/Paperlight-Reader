@@ -1,21 +1,23 @@
 package com.paperlight.reader.ui
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.data.BookRepository
+import com.paperlight.reader.data.PdfEpubMode
+import java.io.File
 import com.paperlight.reader.webnovel.WebNovelScrapeOptions
+import com.paperlight.reader.webnovel.WebNovelExportService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-data class NovelDownloadProgress(val completed: Int, val total: Int, val label: String)
-
-class LibraryViewModel(private val repository: BookRepository) : ViewModel() {
+class LibraryViewModel(private val repository: BookRepository, private val context: Context) : ViewModel() {
     val books = repository.books.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -31,6 +33,13 @@ class LibraryViewModel(private val repository: BookRepository) : ViewModel() {
     val message = _message.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            WebNovelExportService.downloadResult.collect { message ->
+                if (message != null && WebNovelExportService.consumeResult(message)) {
+                    _message.value = message
+                }
+            }
+        }
         viewModelScope.launch {
             try {
                 repository.ensureDefaultLibrary()
@@ -71,6 +80,19 @@ class LibraryViewModel(private val repository: BookRepository) : ViewModel() {
                 failed > 0 -> "Imported $imported of ${uris.size} books. $firstError"
                 imported == 1 -> "Imported $lastFileName"
                 else -> "Imported $imported books"
+            }
+        }
+    }
+
+    fun importDownloadedEpub(file: File, title: String, author: String, libraryId: String) {
+        viewModelScope.launch {
+            try {
+                repository.importGeneratedEpub(file, title, author, libraryId).fold(
+                    onSuccess = { _message.value = "Imported ${it.fileName}" },
+                    onFailure = { _message.value = it.message ?: "Could not import the downloaded EPUB." },
+                )
+            } finally {
+                file.delete()
             }
         }
     }
@@ -156,39 +178,61 @@ class LibraryViewModel(private val repository: BookRepository) : ViewModel() {
         }
     }
 
-    private var downloadJob: kotlinx.coroutines.Job? = null
-    private val _downloadProgress = MutableStateFlow<NovelDownloadProgress?>(null)
-    val downloadProgress = _downloadProgress.asStateFlow()
+    val downloadProgress = WebNovelExportService.downloadProgress
 
-    fun cancelDownload() { downloadJob?.cancel() }
+    fun cancelDownload() {
+        try {
+            WebNovelExportService.cancel(context)
+        } catch (failure: Exception) {
+            _message.value = failure.message ?: "Could not cancel the export."
+        }
+    }
+
+    private var conversionJob: kotlinx.coroutines.Job? = null
+    private val _conversionProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val conversionProgress = _conversionProgress.asStateFlow()
+
+    fun cancelConversion() { conversionJob?.cancel() }
+
+    fun convertPdf(source: File, fallbackTitle: String, mode: PdfEpubMode, libraryId: String) {
+        if (conversionJob?.isActive == true) return
+        _conversionProgress.value = 0 to 0
+        conversionJob = viewModelScope.launch {
+            try {
+                repository.convertPdfToEpub(source, fallbackTitle, mode, libraryId) { completed, total ->
+                    _conversionProgress.value = completed to total
+                }.fold(
+                    onSuccess = { _message.value = "Created ${it.title}.epub" },
+                    onFailure = { _message.value = it.message ?: "Could not convert this PDF." },
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                _message.value = "Conversion cancelled."
+                throw cancelled
+            } finally {
+                _conversionProgress.value = null
+            }
+        }
+    }
 
     fun createEpubFromUrl(
         url: String,
         options: WebNovelScrapeOptions = WebNovelScrapeOptions(),
         libraryId: String = "default"
     ) {
-        if (downloadJob?.isActive == true) return
-        downloadJob = viewModelScope.launch {
-            try {
-                repository.createEpubFromUrl(url, options, libraryId) { completed, total, label ->
-                    _downloadProgress.value = NovelDownloadProgress(completed, total, label)
-                }.fold(
-                    onSuccess = { _message.value = "Created ${it.title}.epub" },
-                    onFailure = { _message.value = it.message ?: "Could not create an EPUB from this page." }
-                )
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                _message.value = "Download cancelled."
-                throw cancelled
-            } finally { _downloadProgress.value = null }
+        if (downloadProgress.value != null) return
+        try {
+            WebNovelExportService.start(context, url, options, libraryId)
+        } catch (failure: Exception) {
+            _message.value = failure.message ?: "Could not start the background export."
         }
     }
 
     companion object {
-        fun factory(repository: BookRepository): ViewModelProvider.Factory =
+        fun factory(repository: BookRepository, context: Context): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return LibraryViewModel(repository) as T
+                    return LibraryViewModel(repository, context.applicationContext) as T
                 }
             }
     }

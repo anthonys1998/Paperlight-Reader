@@ -20,8 +20,8 @@ android {
         applicationId = "com.paperlight.reader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 31
-        versionName = "1.0"
+        versionCode = 39
+        versionName = "1.8"
     }
 
     buildFeatures {
@@ -42,6 +42,8 @@ dependencies {
         exclude(group = "xmlpull", module = "xmlpull")
     }
     implementation("com.github.junrar:junrar:8.1.2")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))

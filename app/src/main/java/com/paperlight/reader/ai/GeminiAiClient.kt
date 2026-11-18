@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.paperlight.reader.data.ReaderAnnotation
 import com.paperlight.reader.webnovel.WebNovelEpubUtility
+import com.paperlight.reader.webnovel.WebNovelScrapeOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -64,7 +65,7 @@ class GeminiApiKeyStore(context: Context) {
         return generator.generateKey()
     }
 
-    private companion object {
+    companion object {
         const val KEY_ALIAS = "vibe-reader-gemini-api-key"
         const val KEY_VALUE = "encrypted"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
@@ -81,17 +82,21 @@ data class GeminiScrapeSuggestion(
     val bookTitle: String,
 )
 
-class GeminiAiClient(context: Context) {
+class GeminiAiClient(private val context: Context) {
     private val keyStore = GeminiApiKeyStore(context)
 
-    suspend fun suggestScrapeConfiguration(url: String): GeminiScrapeSuggestion = withContext(Dispatchers.IO) {
-        val samples = WebNovelEpubUtility().inspectForAi(url)
+    suspend fun suggestScrapeConfiguration(
+        url: String,
+        sampleChapterUrl: String = "",
+        options: WebNovelScrapeOptions = WebNovelScrapeOptions(),
+    ): GeminiScrapeSuggestion = withContext(Dispatchers.IO) {
+        val samples = WebNovelEpubUtility(context).inspectForAi(url, sampleChapterUrl, options)
         val prompt = """You configure a user-requested web-novel EPUB scraper. Read the sanitized HTML samples and return ONLY a JSON object with string fields: chapterLinkSelector, chapterContentSelector, chapterTitleSelector, removeSelector, bookTitle. Use valid CSS selectors only. Select chapter links on the table-of-contents page, the main readable chapter content, its title, and removable clutter. Do not return JavaScript, URLs to fetch, or explanations. If uncertain, use conservative selectors. bookTitle should be a short publication title.
 TOC HTML:
 ${samples.tocHtml}
 CHAPTER HTML:
 ${samples.chapterHtml}"""
-        val json = parseJson(request(prompt))
+        val json = parseJson(request(prompt, jsonOutput = true))
         val suggestion = GeminiScrapeSuggestion(
             chapterLinkSelector = json.optString("chapterLinkSelector").trim().take(300),
             chapterContentSelector = json.optString("chapterContentSelector").trim().take(500),
@@ -141,9 +146,26 @@ ${samples.chapterHtml}"""
         ).trim().take(MAX_SUMMARY_CHARS).ifBlank { "Gemini returned an empty summary. Try again." }
     }
 
-    private suspend fun request(prompt: String): String = withContext(Dispatchers.IO) {
-        val key = keyStore.getKey() ?: throw IllegalStateException("Add your Gemini API key to use AI features.")
-        val connection = (URL(INTERACTIONS_ENDPOINT).openConnection() as HttpURLConnection).apply {
+    suspend fun checkConnection() {
+        request("Reply with the single word OK.")
+    }
+
+    private suspend fun request(prompt: String, jsonOutput: Boolean = false): String {
+        val key = withContext(Dispatchers.IO) { keyStore.getKey() } ?: throw IllegalStateException("Add your Gemini API key to use AI features.")
+        var attempt = 0
+        while (true) {
+            try {
+                return withContext(Dispatchers.IO) { requestOnce(prompt, key, jsonOutput) }
+            } catch (failure: GeminiHttpException) {
+                if (failure.status != 503 || attempt >= 2) throw failure
+                kotlinx.coroutines.delay(800L shl attempt)
+                attempt++
+            }
+        }
+    }
+
+    private fun requestOnce(prompt: String, key: String, jsonOutput: Boolean): String {
+        val connection = (URL(GENERATION_ENDPOINT).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
             readTimeout = 90_000
@@ -152,29 +174,38 @@ ${samples.chapterHtml}"""
             setRequestProperty("x-goog-api-key", key)
         }
         try {
-            val body = JSONObject().put("model", MODEL).put("store", false).put("input", prompt).toString()
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
+            val parts = org.json.JSONArray().put(JSONObject().put("text", prompt))
+            val contents = org.json.JSONArray().put(JSONObject().put("role", "user").put("parts", parts))
+            val body = JSONObject().put("contents", contents)
+            if (jsonOutput) body.put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
             val status = connection.responseCode
             val response = (if (status in 200..299) connection.inputStream else connection.errorStream)
-                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText().take(MAX_RESPONSE_CHARS) }.orEmpty()
-            if (status !in 200..299) throw IllegalStateException(errorMessage(status, response))
-            val root = JSONObject(response)
-            if (root.optString("status") in setOf("failed", "incomplete", "budget_exceeded")) {
-                throw IllegalStateException("Gemini could not finish this request. Try again with a shorter input.")
-            }
-            val steps = root.optJSONArray("steps")
-            val output = buildString {
-                for (stepIndex in 0 until (steps?.length() ?: 0)) {
-                    val step = steps?.optJSONObject(stepIndex) ?: continue
-                    if (step.optString("type") != "model_output") continue
-                    val parts = step.optJSONArray("content") ?: continue
-                    for (partIndex in 0 until parts.length()) {
-                        val part = parts.optJSONObject(partIndex) ?: continue
-                        if (part.optString("type") == "text") append(part.optString("text"))
+                ?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+                    val buffer = CharArray(4096)
+                    buildString {
+                        while (length <= MAX_RESPONSE_CHARS) {
+                            val count = reader.read(buffer)
+                            if (count < 0) break
+                            append(String(buffer, 0, count))
+                        }
+                        check(length <= MAX_RESPONSE_CHARS) { "Gemini returned more text than this request supports." }
                     }
+                }.orEmpty()
+            if (status !in 200..299) throw GeminiHttpException(status, errorMessage(status, response, key))
+            val root = JSONObject(response)
+            val candidate = root.optJSONArray("candidates")?.optJSONObject(0)
+            val reason = candidate?.optString("finishReason").orEmpty()
+            val blocked = root.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty()
+            check(blocked.isBlank()) { "Gemini declined this input ($blocked)." }
+            check(reason == "STOP") { "Gemini could not finish the response (${reason.ifBlank { "no candidate" }})." }
+            val output = candidate?.optJSONObject("content")?.optJSONArray("parts")
+            return buildString {
+                for (i in 0 until (output?.length() ?: 0)) {
+                    val part = output?.optJSONObject(i) ?: continue
+                    if (!part.optBoolean("thought")) append(part.optString("text"))
                 }
-            }
-            output.ifBlank { throw IllegalStateException("Gemini returned no text. Try again.") }
+            }.ifBlank { throw IllegalStateException("Gemini returned no text. Try again.") }
         } finally {
             connection.disconnect()
         }
@@ -188,21 +219,27 @@ ${samples.chapterHtml}"""
         return JSONObject(cleaned.substring(start, end + 1))
     }
 
-    private fun errorMessage(status: Int, response: String): String {
-        val detail = runCatching { JSONObject(response).optJSONObject("error")?.optString("message") }.getOrNull().orEmpty()
-        return when (status) {
-            400, 401, 403 -> if (detail.contains("key", true) || status == 401 || status == 403)
-                "Gemini rejected this API key. Check it in AI settings." else "Gemini could not process the request. $detail"
-            429 -> "Gemini's free or paid API quota is currently limited. Check your AI Studio quota and try again later."
-            else -> "Gemini request failed (HTTP $status). ${detail.take(240)}".trim()
+    private fun errorMessage(status: Int, response: String, key: String): String {
+        val error = runCatching { JSONObject(response).optJSONObject("error") }.getOrNull()
+        val detail = error?.optString("message").orEmpty().replace(key, "[redacted]").take(450)
+        val code = error?.optString("status").orEmpty().take(80)
+        val fallback = when (status) {
+            401, 403 -> "Check the key and project permissions."
+            404 -> "This model or endpoint is unavailable for this project."
+            429 -> "Check the project's quota and rate limits in AI Studio."
+            503 -> "The service is temporarily unavailable. Try again later."
+            else -> "Check the request in AI Studio."
         }
+        return "Gemini $MODEL_ALIAS · HTTP $status $code".trimEnd() + "\n" + detail.ifBlank { fallback }
     }
 
     private companion object {
-        const val MODEL = "gemini-3.8-flash"
-        const val INTERACTIONS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
+        const val MODEL_ALIAS = "gemini-flash-latest"
+        const val GENERATION_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/$MODEL_ALIAS:generateContent"
         const val MAX_RESPONSE_CHARS = 64 * 1024
         const val MAX_NOTES_CHARS = 24_000
         const val MAX_SUMMARY_CHARS = 10_000
     }
+
+    private class GeminiHttpException(val status: Int, message: String) : IllegalStateException(message)
 }

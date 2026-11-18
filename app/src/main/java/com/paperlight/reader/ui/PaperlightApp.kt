@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -54,6 +56,7 @@ import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -70,8 +73,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.data.BookRepository
+import com.paperlight.reader.data.PdfEpubMode
 import com.paperlight.reader.ui.reader.EpubReaderScreen
 import com.paperlight.reader.webnovel.WebNovelScrapeOptions
+import com.paperlight.reader.webnovel.WebNovelEpubUtility
+import com.paperlight.reader.webnovel.WebNovelPreview
 import com.paperlight.reader.ai.GeminiAiClient
 import com.paperlight.reader.ai.GeminiApiKeyStore
 import java.io.File
@@ -144,6 +150,7 @@ private fun PaperlightAppContent(
     val books by viewModel.books.collectAsState()
     val libraries by viewModel.libraries.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
+    val conversionProgress by viewModel.conversionProgress.collectAsState()
     val message by viewModel.message.collectAsState()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -160,6 +167,9 @@ private fun PaperlightAppContent(
     var openingExternalFileName by remember { mutableStateOf<String?>(null) }
     val libraryPreferences = remember { context.getSharedPreferences("libraryAppearance", 0) }
     var listView by rememberSaveable { mutableStateOf(libraryPreferences.getBoolean("listView", false)) }
+    var keepScreenOn by remember { mutableStateOf(libraryPreferences.getBoolean("keepScreenOn", false)) }
+    var shelfColumns by remember { mutableStateOf(libraryPreferences.getInt("shelfColumns", 3).coerceIn(2, 4)) }
+    var markRecent by remember { mutableStateOf(libraryPreferences.getBoolean("markRecent", true)) }
     var sortOrder by rememberSaveable { mutableStateOf(libraryPreferences.getString("sortOrder", "Recent") ?: "Recent") }
     var showSort by remember { mutableStateOf(false) }
     var filter by rememberSaveable { mutableStateOf("All") }
@@ -178,8 +188,18 @@ private fun PaperlightAppContent(
     var showMoveBooks by remember { mutableStateOf(false) }
     var showDeleteBooks by remember { mutableStateOf(false) }
     var showCreateFromWeb by remember { mutableStateOf(false) }
+    var showBookDiscovery by rememberSaveable { mutableStateOf(false) }
+    var pendingPdfPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingPdfTitle by rememberSaveable { mutableStateOf("") }
+    var pdfConversionMode by rememberSaveable { mutableStateOf(PdfEpubMode.Text) }
     var novelUrl by remember { mutableStateOf("") }
-    var chapterLimit by rememberSaveable { mutableStateOf("2000") }
+    var sampleChapterUrl by rememberSaveable { mutableStateOf("") }
+    var renderNovelInBrowser by rememberSaveable { mutableStateOf(false) }
+    var chapterPreview by remember { mutableStateOf<WebNovelPreview?>(null) }
+    var previewBusy by remember { mutableStateOf(false) }
+    var previewError by remember { mutableStateOf<String?>(null) }
+    var firstChapter by rememberSaveable { mutableStateOf("1") }
+    var lastChapter by rememberSaveable { mutableStateOf("") }
     var chapterLinkSelector by remember { mutableStateOf("a[href]") }
     var chapterContentSelector by remember { mutableStateOf(".chapter-content, .chapter-body, #chapter-content, .read-content, .entry-content, article, main, #content") }
     var chapterTitleSelector by remember { mutableStateOf("h1, h2") }
@@ -208,6 +228,12 @@ private fun PaperlightAppContent(
             pagerState.animateScrollToPage(0)
             fileManagerMode = FileManagerMode.Browse
         }
+    }
+
+    fun choosePdf(path: String, title: String) {
+        pendingPdfPath = path
+        pendingPdfTitle = title
+        pdfConversionMode = PdfEpubMode.Text
     }
 
     fun openExternalBook(file: ExternalBookFile) {
@@ -299,6 +325,15 @@ private fun PaperlightAppContent(
     }
 
     val opened = externalBook ?: books.find { it.id == selectedId }
+    if (opened != null && keepScreenOn) {
+        val view = androidx.compose.ui.platform.LocalView.current
+        DisposableEffect(view) {
+            val previous = view.keepScreenOn
+            view.keepScreenOn = true
+            onDispose { view.keepScreenOn = previous }
+        }
+    }
+
     if (opened != null && externalBook == null) TrackReadingTime(opened.id)
     if (opened != null && opened.format in setOf("PDF", "CBZ", "CBR")) {
         BackHandler { leaveOpenedBook() }
@@ -406,7 +441,12 @@ private fun PaperlightAppContent(
         FileManagerScreen(
             mode = fileManagerMode,
             onClose = ::returnToLibrary,
-            onOpenFile = ::openExternalBook,
+            onOpenFile = { file ->
+                if (fileManagerMode == FileManagerMode.ConvertPdf) {
+                    file.uri.path?.let { path -> choosePdf(path, file.name.substringBeforeLast('.')) }
+                    returnToLibrary()
+                } else openExternalBook(file)
+            },
             onImportFiles = { uris ->
                 viewModel.importBooks(uris, activeLibraryId ?: "default")
                 returnToLibrary()
@@ -458,11 +498,19 @@ private fun PaperlightAppContent(
                 NavigationDrawerItem(label = { Text("Create EPUB from website") }, selected = false,
                     icon = { Icon(Icons.Rounded.Link, null) }, onClick = { showCreateFromWeb = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Convert PDF to EPUB") }, selected = false,
+                    icon = { Icon(Icons.Rounded.PictureAsPdf, null) },
+                    onClick = { if (conversionProgress == null) showFileManager(FileManagerMode.ConvertPdf) },
+                    modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Find books") }, selected = false,
+                    icon = { Icon(Icons.Rounded.Search, null) },
+                    onClick = { showBookDiscovery = true; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 NavigationDrawerItem(label = { Text("Reading statistics") }, selected = false,
                     icon = { Icon(Icons.Rounded.BarChart, null) }, onClick = { showStatistics = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
-                NavigationDrawerItem(label = { Text("Accessibility") }, selected = false,
+                NavigationDrawerItem(label = { Text("App settings") }, selected = false,
                     icon = { Icon(Icons.Rounded.Accessibility, null) }, onClick = { showAccessibility = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Gemini AI key") }, selected = false,
@@ -489,6 +537,15 @@ private fun PaperlightAppContent(
             TopAppBar(
                 title = {
                     if (selectedBooks.isNotEmpty()) {
+                        val selectedPdf = selectedBooks.singleOrNull()?.let { id ->
+                            books.find { it.id == id && it.format == "PDF" }
+                        }
+                        if (selectedPdf != null) {
+                            IconButton(enabled = conversionProgress == null,
+                                onClick = { choosePdf(selectedPdf.localPath, selectedPdf.title) }) {
+                                Icon(Icons.Rounded.PictureAsPdf, "Convert PDF to EPUB")
+                            }
+                        }
                         Text("${selectedBooks.size} selected", maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Serif)
                     } else {
                         Box {
@@ -584,6 +641,19 @@ private fun PaperlightAppContent(
       ) { padding ->
           Column(Modifier.fillMaxSize().padding(padding)) {
             if (libraryBusy || folder != null) LinearProgressIndicator(Modifier.fillMaxWidth())
+            conversionProgress?.let { (completed, total) ->
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (total > 0) "Converting PDF · $completed / $total pages" else "Opening PDF…",
+                            Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = viewModel::cancelConversion) { Text("Cancel") }
+                    }
+                    if (total > 0) LinearProgressIndicator(
+                        progress = { (completed.toFloat() / total).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) else LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+            }
             downloadProgress?.let { progress ->
                 Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -642,14 +712,14 @@ private fun PaperlightAppContent(
                 }
                 if (listView) LazyColumn(Modifier.weight(1f)) {
                     items(filtered, key = { it.id }) { book ->
-                        BookListRow(book, book.id == latest, book.id in selectedBooks,
+                        BookListRow(book, markRecent && book.id == latest, book.id in selectedBooks,
                             onClick = { if (selectedBooks.isEmpty()) selectedId = book.id else toggle(book) }, onLongClick = { toggle(book) })
                     }
                 } else {
-                    val rows = filtered.chunked(3)
+                    val rows = filtered.chunked(shelfColumns)
                     LazyColumn(Modifier.weight(1f).background(Color(0xFF61412C)), contentPadding = PaddingValues(top = 4.dp)) {
                         items(count = maxOf(4, rows.size), key = { index -> "shelf:$index" }) { index ->
-                            ShelfRow(rows.getOrNull(index).orEmpty(), latest, selectedBooks,
+                            ShelfRow(rows.getOrNull(index).orEmpty(), latest.takeIf { markRecent }, selectedBooks, shelfColumns,
                                 onOpen = { selectedId = it.id }, onToggle = toggle)
                         }
                     }
@@ -664,13 +734,75 @@ private fun PaperlightAppContent(
     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
     }
 
+    if (showBookDiscovery) BookDiscoveryScreen(
+        onDismiss = { showBookDiscovery = false },
+        onImportEpub = { file, title, author ->
+            viewModel.importDownloadedEpub(file, title, author, activeLibraryId ?: "default")
+        },
+    )
+    if (pagerState.settledPage == 0) pendingPdfPath?.let { path ->
+        AlertDialog(
+            onDismissRequest = { pendingPdfPath = null },
+            title = { Text("Convert PDF to EPUB") },
+            text = {
+                Column {
+                    Text(pendingPdfTitle, style = MaterialTheme.typography.titleSmall)
+                    PdfEpubMode.entries.forEach { mode ->
+                        val label = if (mode == PdfEpubMode.Text) "Reflowable text + OCR" else "Page images"
+                        val detail = if (mode == PdfEpubMode.Text) "Extracts selectable text and OCRs scanned pages. Complex layouts may still read out of order."
+                            else "Preserves the page layout as images, without selectable text."
+                        Row(
+                            Modifier.fillMaxWidth().clickable { pdfConversionMode = mode }.padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = pdfConversionMode == mode, onClick = null)
+                            Column(Modifier.padding(start = 12.dp)) {
+                                Text(label)
+                                Text(detail, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = conversionProgress == null, onClick = {
+                    viewModel.convertPdf(File(path), pendingPdfTitle, pdfConversionMode, activeLibraryId ?: "default")
+                    pendingPdfPath = null
+                    selectedBooks = emptySet()
+                }) { Text("Convert and add") }
+            },
+            dismissButton = { TextButton(onClick = { pendingPdfPath = null }) { Text("Cancel") } },
+        )
+    }
     if (showStatistics) ReadingStatisticsDialog(books) { showStatistics = false }
     if (showAccessibility) {
         AlertDialog(
             onDismissRequest = { showAccessibility = false },
-            title = { Text("Accessibility") },
+            title = { Text("App settings") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Books per shelf", style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (count in 2..4) FilterChip(selected = shelfColumns == count, onClick = {
+                            shelfColumns = count
+                            libraryPreferences.edit().putInt("shelfColumns", count).apply()
+                        }, label = { Text(count.toString()) })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Mark last read book", Modifier.weight(1f))
+                        Switch(checked = markRecent, onCheckedChange = {
+                            markRecent = it
+                            libraryPreferences.edit().putBoolean("markRecent", it).apply()
+                        })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Keep screen on while reading", Modifier.weight(1f))
+                        Switch(checked = keepScreenOn, onCheckedChange = {
+                            keepScreenOn = it
+                            libraryPreferences.edit().putBoolean("keepScreenOn", it).apply()
+                        })
+                    }
+                    HorizontalDivider()
                     Text("Interface text size", style = MaterialTheme.typography.titleSmall)
                     Slider(
                         value = uiTextScale,
@@ -808,8 +940,21 @@ private fun PaperlightAppContent(
         )
     }
     if (showCreateFromWeb) {
+        val first = firstChapter.toIntOrNull()
+        val last = lastChapter.toIntOrNull()
+        val validRange = first != null && first > 0 && (lastChapter.isBlank() || (last != null && last >= first))
+        val options = WebNovelScrapeOptions(
+            firstChapter = first ?: 1,
+            lastChapter = last,
+            chapterLinkSelector = chapterLinkSelector,
+            chapterContentSelector = chapterContentSelector,
+            chapterTitleSelector = chapterTitleSelector,
+            removeSelector = removeSelector,
+            renderInBrowser = renderNovelInBrowser,
+        )
+        val canCheckSite = !previewBusy && !aiScrapeBusy && novelUrl.startsWith("http", ignoreCase = true)
         AlertDialog(
-            onDismissRequest = { showCreateFromWeb = false },
+            onDismissRequest = { if (!previewBusy && !aiScrapeBusy) showCreateFromWeb = false },
             title = { Text("Create EPUB from website") },
             text = {
                 Column(
@@ -818,44 +963,146 @@ private fun PaperlightAppContent(
                 ) {
                     OutlinedTextField(
                         value = novelUrl,
-                        onValueChange = { novelUrl = it },
+                        onValueChange = {
+                            novelUrl = it
+                            chapterPreview = null
+                            previewError = null
+                        },
+                        enabled = !previewBusy && !aiScrapeBusy,
                         label = { Text("Table of contents URL") },
                         singleLine = true
                     )
+                    OutlinedTextField(
+                        value = sampleChapterUrl,
+                        onValueChange = {
+                            sampleChapterUrl = it
+                            chapterPreview = null
+                            previewError = null
+                        },
+                        label = { Text("Sample chapter URL (optional)") },
+                        singleLine = true,
+                        enabled = !previewBusy && !aiScrapeBusy,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = renderNovelInBrowser,
+                            onCheckedChange = {
+                                renderNovelInBrowser = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
+                        )
+                        Text("Render pages in browser")
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = firstChapter,
+                            onValueChange = {
+                                firstChapter = it.filter { char -> char in '0'..'9' }.take(9)
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            label = { Text("First chapter") },
+                            modifier = Modifier.weight(1f),
+                            enabled = !previewBusy && !aiScrapeBusy,
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                        OutlinedTextField(
+                            value = lastChapter,
+                            onValueChange = {
+                                lastChapter = it.filter { char -> char in '0'..'9' }.take(9)
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            label = { Text("Last chapter") },
+                            placeholder = { Text("To the end") },
+                            modifier = Modifier.weight(1f),
+                            enabled = !previewBusy && !aiScrapeBusy,
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                    }
+                    Text(
+                        if (validRange) "Positions in the table of contents. Leave the last chapter blank to export to the end."
+                        else "Enter a positive first chapter and a last chapter at or after it.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(enabled = canCheckSite && validRange, onClick = {
+                        chapterPreview = null
+                        previewError = null
+                        previewBusy = true
+                        scope.launch {
+                            try {
+                                chapterPreview = WebNovelEpubUtility(context).preview(novelUrl, sampleChapterUrl, options)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Exception) {
+                                previewError = failure.message ?: "Could not preview the chapter."
+                            } finally {
+                                previewBusy = false
+                            }
+                        }
+                    }) { Text(if (previewBusy) "Loading preview…" else "Preview chapter") }
+                    chapterPreview?.let {
+                        Text("${it.chapterCount} chapters found", style = MaterialTheme.typography.labelMedium)
+                        Text(it.chapterTitle, style = MaterialTheme.typography.titleSmall)
+                        Text(it.excerpt, style = MaterialTheme.typography.bodySmall)
+                    }
+                    previewError?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
                     TextButton(onClick = { showScrapeOptions = !showScrapeOptions }) {
                         Text(if (showScrapeOptions) "Hide site selectors" else "Advanced site selectors")
                     }
                     if (showScrapeOptions) {
-                        OutlinedTextField(value = chapterLimit,
-                            onValueChange = { chapterLimit = it.filter(Char::isDigit).take(5) },
-                            label = { Text("Maximum chapters") }, singleLine = true,
-                            supportingText = { Text("1–9,000. A longer book will ask you to increase this limit.") })
                         OutlinedTextField(
                             value = chapterLinkSelector,
-                            onValueChange = { chapterLinkSelector = it },
+                            onValueChange = {
+                                chapterLinkSelector = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Chapter link CSS selector") },
                             supportingText = { Text("Default: a[href]") }
                         )
                         OutlinedTextField(
                             value = chapterContentSelector,
-                            onValueChange = { chapterContentSelector = it },
+                            onValueChange = {
+                                chapterContentSelector = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Chapter content CSS selector") },
                             supportingText = { Text("Used when a site needs a custom selector") }
                         )
                         OutlinedTextField(
                             value = chapterTitleSelector,
-                            onValueChange = { chapterTitleSelector = it },
+                            onValueChange = {
+                                chapterTitleSelector = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Chapter title CSS selector") },
                             supportingText = { Text("Default: h1, h2") }
                         )
                         OutlinedTextField(
                             value = removeSelector,
-                            onValueChange = { removeSelector = it },
+                            onValueChange = {
+                                removeSelector = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Remove from chapter CSS selector") },
                             supportingText = { Text("Navigation, advertisements, comments, etc.") }
                         )
                         TextButton(
-                            enabled = !aiScrapeBusy && novelUrl.startsWith("http", ignoreCase = true),
+                            enabled = canCheckSite,
                             onClick = {
                                 aiScrapeError = null
                                 if (!GeminiApiKeyStore(context).hasKey()) showGeminiApiKeyScreen = true
@@ -863,8 +1110,10 @@ private fun PaperlightAppContent(
                                     aiScrapeBusy = true
                                     try {
                                         val suggestion = withContext(Dispatchers.IO) {
-                                            GeminiAiClient(context).suggestScrapeConfiguration(novelUrl)
+                                            GeminiAiClient(context).suggestScrapeConfiguration(novelUrl, sampleChapterUrl, options)
                                         }
+                                        chapterPreview = null
+                                        previewError = null
                                         chapterLinkSelector = suggestion.chapterLinkSelector
                                         chapterContentSelector = suggestion.chapterContentSelector
                                         chapterTitleSelector = suggestion.chapterTitleSelector
@@ -893,23 +1142,16 @@ private fun PaperlightAppContent(
                 }
             },
             confirmButton = {
-                TextButton(enabled = downloadProgress == null && novelUrl.startsWith("http", ignoreCase = true) &&
-                    chapterLimit.toIntOrNull()?.let { it in 1..9_000 } == true, onClick = {
+                TextButton(enabled = downloadProgress == null && canCheckSite && validRange, onClick = {
                     viewModel.createEpubFromUrl(
                         novelUrl,
-                        WebNovelScrapeOptions(
-                            maxChapters = chapterLimit.toIntOrNull() ?: 2_000,
-                            chapterLinkSelector = chapterLinkSelector,
-                            chapterContentSelector = chapterContentSelector,
-                            chapterTitleSelector = chapterTitleSelector,
-                            removeSelector = removeSelector
-                        ),
+                        options,
                         activeLibraryId ?: "default"
                     )
                     showCreateFromWeb = false
                 }) { Text("Download and create") }
             },
-            dismissButton = { TextButton(onClick = { showCreateFromWeb = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(enabled = !previewBusy && !aiScrapeBusy, onClick = { showCreateFromWeb = false }) { Text("Cancel") } }
         )
     }
     candidates?.let { files ->
@@ -996,7 +1238,7 @@ private fun BookTile(
 
 @Composable
 private fun ShelfRow(
-    books: List<BookEntity>, recentId: String?, selectedIds: Set<String>,
+    books: List<BookEntity>, recentId: String?, selectedIds: Set<String>, columns: Int,
     onOpen: (BookEntity) -> Unit, onToggle: (BookEntity) -> Unit
 ) {
     Column(Modifier.fillMaxWidth()) {
@@ -1005,7 +1247,7 @@ private fun ShelfRow(
                 Modifier.matchParentSize(), contentScale = ContentScale.FillBounds)
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.Bottom) {
-                repeat(3) { index ->
+                repeat(columns) { index ->
                     Box(Modifier.weight(1f).aspectRatio(.74f)) {
                         books.getOrNull(index)?.let { book ->
                             BookTile(book, book.id == recentId, book.id in selectedIds, selectedIds.isNotEmpty(),

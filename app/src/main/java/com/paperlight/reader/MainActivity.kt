@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val libraryViewModel: LibraryViewModel = viewModel(
-                factory = LibraryViewModel.factory(repository)
+                factory = LibraryViewModel.factory(repository, applicationContext)
             )
             PaperlightTheme {
                 PaperlightApp(viewModel = libraryViewModel)

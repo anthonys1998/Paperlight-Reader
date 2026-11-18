@@ -1,5 +1,9 @@
 package com.paperlight.reader.ui
 
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import com.paperlight.reader.ai.GeminiAiClient
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.*
@@ -28,10 +32,12 @@ internal fun GeminiApiKeyScreen(onClose: () -> Unit, onSaved: () -> Unit = {}) {
     val context = LocalContext.current
     val keyStore = remember(context) { GeminiApiKeyStore(context) }
     var key by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf("") }
     var visible by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var hasKey by remember { mutableStateOf(keyStore.hasKey()) }
-
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
@@ -40,7 +46,7 @@ internal fun GeminiApiKeyScreen(onClose: () -> Unit, onSaved: () -> Unit = {}) {
                     navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.Rounded.ArrowBack, "Back") } }
                 )
                 Column(
-                    Modifier.fillMaxWidth().weight(1f).padding(horizontal = 24.dp, vertical = 16.dp),
+                    Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Text(
@@ -52,6 +58,8 @@ internal fun GeminiApiKeyScreen(onClose: () -> Unit, onSaved: () -> Unit = {}) {
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Text("Model selection is automatic. The API resolves Gemini Flash to its current version.",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(onClick = {
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey"))) }
                     }) {
@@ -77,8 +85,25 @@ internal fun GeminiApiKeyScreen(onClose: () -> Unit, onSaved: () -> Unit = {}) {
                         }
                     )
                     if (hasKey) {
+                        OutlinedButton(enabled = !checking && key.isBlank(), onClick = {
+                            scope.launch {
+                                checking = true
+                                result = ""
+                                try {
+                                    GeminiAiClient(context).checkConnection()
+                                    result = "Connected. Gemini returned text using your saved key."
+                                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                    throw cancelled
+                                } catch (failure: Exception) {
+                                    result = failure.message ?: "Connection failed."
+                                } finally {
+                                    checking = false
+                                }
+                            }
+                        }) { Text(if (checking) "Checking…" else "Test saved key") }
+                        if (result.isNotBlank()) Text(result)
                         Text("An API key is saved on this device.", color = MaterialTheme.colorScheme.primary)
-                        TextButton(onClick = { keyStore.clear(); hasKey = false; key = ""; error = null; onSaved() }) { Text("Remove saved key") }
+                        TextButton(enabled = !checking, onClick = { result = ""; keyStore.clear(); hasKey = false; key = ""; error = null; onSaved() }) { Text("Remove saved key") }
                     }
                     Spacer(Modifier.weight(1f))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
