@@ -25,9 +25,27 @@ data class WebNovelScrapeOptions(
 )
 
 data class WebNovelEpubResult(val file: File, val title: String, val chapterCount: Int)
+data class WebNovelAiSamples(val tocHtml: String, val chapterHtml: String)
 
 /** Scrapes a user-supplied novel TOC and writes a DRM-free EPUB without blocking the UI dispatcher. */
 class WebNovelEpubUtility {
+    suspend fun inspectForAi(tableOfContentsUrl: String): WebNovelAiSamples = withContext(Dispatchers.IO) {
+        val start = validateHttpUrl(tableOfContentsUrl)
+        val toc = fetch(start.toString())
+        val tocUri = validateHttpUrl(toc.baseUri())
+        val firstChapter = toc.select("a[href]").asSequence().mapNotNull { anchor ->
+            val href = anchor.absUrl("href").ifBlank { return@mapNotNull null }
+            val uri = runCatching { validateHttpUrl(href) }.getOrNull() ?: return@mapNotNull null
+            if (!sameOrigin(tocUri, uri) || (uri.path == tocUri.path && uri.query == tocUri.query)) return@mapNotNull null
+            uri.normalize().toString()
+        }.distinct().firstOrNull() ?: error("Could not find a same-site chapter link to inspect. Enter the selectors manually.")
+        val chapter = fetch(firstChapter)
+        WebNovelAiSamples(
+            tocHtml = sanitizedSample(toc, 9_000),
+            chapterHtml = sanitizedSample(chapter, 9_000),
+        )
+    }
+
     suspend fun createEpub(
         tableOfContentsUrl: String,
         destination: File,
@@ -97,6 +115,19 @@ class WebNovelEpubUtility {
         .maxBodySize(MAX_PAGE_BYTES)
         .followRedirects(true)
         .get()
+
+    private fun sanitizedSample(document: Document, limit: Int): String {
+        val sample = document.clone()
+        sample.select("script, style, noscript, svg, iframe, object, embed, form, nav, footer, header, aside, img, video, audio").remove()
+        sample.select("*").forEach { element ->
+            element.attributes().asList().map { it.key }.filterNot { it in setOf("class", "id", "href") }.forEach(element::removeAttr)
+            if (element.hasAttr("href")) {
+                val path = runCatching { URI(element.attr("href")).path }.getOrNull().orEmpty()
+                element.attr("href", path.take(240))
+            }
+        }
+        return sample.body().html().take(limit)
+    }
 
     private fun extractChapterLinks(
         toc: Document,

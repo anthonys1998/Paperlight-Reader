@@ -1,3 +1,9 @@
+## 0.11.5-dev
+- Add optional Gemini API features for website scraper selectors and summaries of written reader notes, with encrypted user-key storage and first-use key setup.
+- Add a swipe-left device file browser. It opens supported books from a temporary cache copy without importing or adding them to a library.
+- Validate Gemini-generated CSS selectors against sanitized page samples before applying them.
+- Android builds and device behavior remain unverified in this environment.
+
 ## 0.11.3-dev
 - Remove shelf footer strips and overlay progress on book covers.
 - Keep the real status bar transparent, with theme-appropriate icons, while hiding navigation buttons.

@@ -20,8 +20,8 @@ android {
         applicationId = "com.paperlight.reader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
-        versionName = "0.11.4-dev"
+        versionCode = 30
+        versionName = "0.11.5-dev"
     }
 
     buildFeatures {

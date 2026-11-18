@@ -9,6 +9,17 @@
 
 # Manual test checklist — EPUB milestone
 
+## 0.11.5 Gemini and device file browser
+
+- From the library, swipe left and choose a folder. Confirm supported EPUB, PDF, MOBI/AZW, TXT, CBZ and CBR files are listed.
+- Open one file from the device list. Confirm it opens without appearing in a library; return to the file list and open a different file. Remove/rename the original while the app is closed and confirm no imported record was created.
+- Use either AI feature without a saved key. Confirm the Gemini settings page appears only after the feature is requested. Save a key, use the feature, and verify the key can be replaced or removed from the library menu.
+- Try Gemini scraper suggestions on a small public TOC. Confirm the disclosure appears, selectors are validated and can be edited before downloading. Also verify a failed request leaves the selector fields usable.
+- Summarize written notes. Confirm the summary is displayed, highlighted passage text is not sent, errors are recoverable and no-note state disables the action.
+- Check invalid API keys, offline requests and quota errors; confirm a useful message is shown and the app remains usable.
+
+The APK has not been built in this environment; run the GitHub Actions Android build and verify on a device before release.
+
 ## Accessibility and library navigation
 
 - Tap the library title and switch among All books and several named libraries. Confirm the displayed book set updates and the active library is marked.

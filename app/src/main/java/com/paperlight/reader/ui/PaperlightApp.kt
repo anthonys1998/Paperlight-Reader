@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.MenuBook
@@ -49,6 +51,8 @@ import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Accessibility
+import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -65,6 +69,10 @@ import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.data.BookRepository
 import com.paperlight.reader.ui.reader.EpubReaderScreen
 import com.paperlight.reader.webnovel.WebNovelScrapeOptions
+import com.paperlight.reader.ai.GeminiAiClient
+import com.paperlight.reader.ai.GeminiApiKeyStore
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -74,6 +82,33 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.Role
 
 private data class FolderBook(val uri: Uri, val name: String)
+
+private fun queryBookFiles(context: android.content.Context, tree: Uri): List<ExternalBookFile> {
+    val columns = arrayOf(
+        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+        DocumentsContract.Document.COLUMN_MIME_TYPE,
+    )
+    val files = mutableListOf<ExternalBookFile>()
+    val pending = java.util.ArrayDeque<String>().apply { add(DocumentsContract.getTreeDocumentId(tree)) }
+    val visited = mutableSetOf<String>()
+    while (pending.isNotEmpty()) {
+        val directory = pending.removeFirst()
+        if (!visited.add(directory)) continue
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, directory)
+        context.contentResolver.query(children, columns, null, null, null)?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0) ?: continue
+                val name = cursor.getString(1) ?: continue
+                if (cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) pending.add(id)
+                else if (BookRepository.formatOf(name) != null) {
+                    files += ExternalBookFile(DocumentsContract.buildDocumentUriUsingTree(tree, id), name)
+                }
+            }
+        } ?: error("Could not read a folder in this location")
+    }
+    return files.sortedBy { it.name.lowercase(java.util.Locale.ROOT) }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -111,7 +146,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun PaperlightAppContent(
     viewModel: LibraryViewModel,
@@ -135,6 +170,18 @@ private fun PaperlightAppContent(
     var activeLibraryId by rememberSaveable { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    val pagerState = rememberPagerState(pageCount = { 2 })
+    var externalBook by remember { mutableStateOf<BookEntity?>(null) }
+    var externalFolder by remember { mutableStateOf<Uri?>(null) }
+    var externalFiles by remember { mutableStateOf<List<ExternalBookFile>>(emptyList()) }
+    var externalFolderLoading by remember { mutableStateOf(false) }
+    var openingExternalFileName by remember { mutableStateOf<String?>(null) }
+    val openExternalFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            externalFolder = uri
+        }
+    }
     val libraryPreferences = remember { context.getSharedPreferences("libraryAppearance", 0) }
     var listView by rememberSaveable { mutableStateOf(libraryPreferences.getBoolean("listView", false)) }
     var sortOrder by rememberSaveable { mutableStateOf(libraryPreferences.getString("sortOrder", "Recent") ?: "Recent") }
@@ -146,6 +193,7 @@ private fun PaperlightAppContent(
     var libraryError by remember { mutableStateOf<String?>(null) }
     var showStatistics by remember { mutableStateOf(false) }
     var showAccessibility by remember { mutableStateOf(false) }
+    var showGeminiApiKeyScreen by remember { mutableStateOf(false) }
     var pendingRestore by remember { mutableStateOf<Uri?>(null) }
     var showMoreActions by remember { mutableStateOf(false) }
     var showLibraryMenu by remember { mutableStateOf(false) }
@@ -158,6 +206,10 @@ private fun PaperlightAppContent(
     var chapterLimit by rememberSaveable { mutableStateOf("2000") }
     var chapterLinkSelector by remember { mutableStateOf("a[href]") }
     var chapterContentSelector by remember { mutableStateOf(".chapter-content, .chapter-body, #chapter-content, .read-content, .entry-content, article, main, #content") }
+    var chapterTitleSelector by remember { mutableStateOf("h1, h2") }
+    var removeSelector by remember { mutableStateOf("script, style, noscript, nav, header, footer, aside, .ads, .advertisement, .share, .comments") }
+    var aiScrapeBusy by remember { mutableStateOf(false) }
+    var aiScrapeError by remember { mutableStateOf<String?>(null) }
     var showScrapeOptions by remember { mutableStateOf(false) }
     var folder by remember { mutableStateOf<Uri?>(null) }
     var candidates by remember { mutableStateOf<List<FolderBook>?>(null) }
@@ -171,6 +223,67 @@ private fun PaperlightAppContent(
         uris.forEach { viewModel.import(it, activeLibraryId ?: "default") }
     }
     val scan = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { folder = it }
+
+    LaunchedEffect(externalFolder) {
+        val tree = externalFolder ?: return@LaunchedEffect
+        externalFolderLoading = true
+        try {
+            externalFiles = withContext(Dispatchers.IO) { queryBookFiles(context, tree) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            externalFiles = emptyList()
+            snackbar.showSnackbar("Could not browse this folder")
+        } finally {
+            externalFolderLoading = false
+        }
+    }
+
+    fun openExternalBook(file: ExternalBookFile) {
+        if (openingExternalFileName != null) return
+        openingExternalFileName = file.name
+        scope.launch {
+            try {
+                val openedFile = withContext(Dispatchers.IO) {
+                    val id = "external-" + UUID.nameUUIDFromBytes(file.uri.toString().toByteArray()).toString()
+                    val extension = file.name.substringAfterLast('.', "book").lowercase(java.util.Locale.ROOT)
+                    val local = File(context.cacheDir, "$id.$extension")
+                    try {
+                        context.contentResolver.openInputStream(file.uri)?.use { input ->
+                            local.outputStream().use { output -> input.copyTo(output) }
+                        } ?: error("Unable to read this file.")
+                    } catch (failure: Exception) {
+                        local.delete()
+                        throw failure
+                    }
+                    BookEntity(
+                        id = id,
+                        title = file.name.substringBeforeLast('.', file.name),
+                        fileName = file.name,
+                        localPath = local.absolutePath,
+                        format = file.format,
+                        importedAt = System.currentTimeMillis(),
+                    )
+                }
+                externalBook = openedFile
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                snackbar.showSnackbar(failure.message ?: "Could not open this book.")
+            } finally {
+                openingExternalFileName = null
+            }
+        }
+    }
+
+    fun leaveOpenedBook() {
+        externalBook?.let { temporary ->
+            File(temporary.localPath).delete()
+            File(context.filesDir, "epub/${temporary.id}").deleteRecursively()
+        }
+        externalBook = null
+        selectedId = null
+    }
 
     LaunchedEffect(message) {
         message?.let {
@@ -221,23 +334,23 @@ private fun PaperlightAppContent(
         }
     }
 
-    val opened = books.find { it.id == selectedId }
-    if (opened != null) TrackReadingTime(opened.id)
+    val opened = externalBook ?: books.find { it.id == selectedId }
+    if (opened != null && externalBook == null) TrackReadingTime(opened.id)
     if (opened != null && opened.format in setOf("PDF", "CBZ", "CBR")) {
-        BackHandler { selectedId = null }
-        ImagePageReaderScreen(opened, onBack = { selectedId = null },
-            onProgress = { viewModel.updateProgress(opened.id, it) })
+        BackHandler { leaveOpenedBook() }
+        ImagePageReaderScreen(opened, onBack = { leaveOpenedBook() },
+            onProgress = { if (externalBook == null) viewModel.updateProgress(opened.id, it) })
         return
     }
     if (opened != null && opened.format in setOf("EPUB", "TXT", "MOBI", "AZW3")) {
-        BackHandler { selectedId = null }
+        BackHandler { leaveOpenedBook() }
         Box(Modifier.fillMaxSize()) {
             EpubReaderScreen(
                 book = opened,
-                onBack = { selectedId = null },
+                onBack = { leaveOpenedBook() },
                 libraryBooks = books,
                 onProgress = { progress ->
-                    viewModel.updateProgress(opened.id, progress)
+                    if (externalBook == null) viewModel.updateProgress(opened.id, progress)
                 }
             )
         }
@@ -278,7 +391,20 @@ private fun PaperlightAppContent(
     val activeLibrary = libraries.find { it.id == activeLibraryId }
     val title = activeLibrary?.name ?: "All books"
     BackHandler(selectedBooks.isNotEmpty()) { selectedBooks = emptySet() }
-    ModalNavigationDrawer(
+    BackHandler(pagerState.currentPage == 1) { scope.launch { pagerState.animateScrollToPage(0) } }
+    HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { screen ->
+      if (screen == 1) {
+        FileManagerScreen(
+            folderName = externalFolder?.let { DocumentsContract.getTreeDocumentId(it).substringAfterLast(':').substringAfterLast('/') },
+            files = externalFiles,
+            loading = externalFolderLoading,
+            openingFileName = openingExternalFileName,
+            onBack = { scope.launch { pagerState.animateScrollToPage(0) } },
+            onChooseFolder = { openExternalFolder.launch(null) },
+            onOpen = ::openExternalBook,
+        )
+      } else {
+       ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
             ModalDrawerSheet(Modifier.widthIn(max = 320.dp)) {
@@ -310,6 +436,10 @@ private fun PaperlightAppContent(
                 NavigationDrawerItem(label = { Text("Scan folder") }, selected = false,
                     icon = { Icon(Icons.Rounded.FolderOpen, null) }, onClick = { scan.launch(null); scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Browse device files") }, selected = false,
+                    icon = { Icon(Icons.Rounded.FolderOpen, null) }, onClick = {
+                        scope.launch { drawer.close(); pagerState.animateScrollToPage(1) }
+                    }, modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Create EPUB from website") }, selected = false,
                     icon = { Icon(Icons.Rounded.Link, null) }, onClick = { showCreateFromWeb = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
@@ -319,6 +449,9 @@ private fun PaperlightAppContent(
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Accessibility") }, selected = false,
                     icon = { Icon(Icons.Rounded.Accessibility, null) }, onClick = { showAccessibility = true; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Gemini AI key") }, selected = false,
+                    icon = { Icon(Icons.Rounded.Key, null) }, onClick = { showGeminiApiKeyScreen = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Export backup") }, selected = false,
                     icon = { Icon(Icons.Rounded.Backup, null) }, onClick = {
@@ -510,6 +643,8 @@ private fun PaperlightAppContent(
             }
           }
       }
+       }
+      }
     }
 
     if (showStatistics) ReadingStatisticsDialog(books) { showStatistics = false }
@@ -557,6 +692,7 @@ private fun PaperlightAppContent(
             confirmButton = { TextButton(onClick = { showAccessibility = false }) { Text("Done") } }
         )
     }
+    if (showGeminiApiKeyScreen) GeminiApiKeyScreen(onClose = { showGeminiApiKeyScreen = false })
     pendingRestore?.let { uri ->
         AlertDialog(onDismissRequest = { pendingRestore = null }, title = { Text("Restore backup?") },
             text = { Text("Books, libraries, reading progress, notes and bookmarks will be imported. Books already present will be skipped.") },
@@ -682,6 +818,51 @@ private fun PaperlightAppContent(
                             label = { Text("Chapter content CSS selector") },
                             supportingText = { Text("Used when a site needs a custom selector") }
                         )
+                        OutlinedTextField(
+                            value = chapterTitleSelector,
+                            onValueChange = { chapterTitleSelector = it },
+                            label = { Text("Chapter title CSS selector") },
+                            supportingText = { Text("Default: h1, h2") }
+                        )
+                        OutlinedTextField(
+                            value = removeSelector,
+                            onValueChange = { removeSelector = it },
+                            label = { Text("Remove from chapter CSS selector") },
+                            supportingText = { Text("Navigation, advertisements, comments, etc.") }
+                        )
+                        TextButton(
+                            enabled = !aiScrapeBusy && novelUrl.startsWith("http", ignoreCase = true),
+                            onClick = {
+                                aiScrapeError = null
+                                if (!GeminiApiKeyStore(context).hasKey()) showGeminiApiKeyScreen = true
+                                else scope.launch {
+                                    aiScrapeBusy = true
+                                    try {
+                                        val suggestion = withContext(Dispatchers.IO) {
+                                            GeminiAiClient(context).suggestScrapeConfiguration(novelUrl)
+                                        }
+                                        chapterLinkSelector = suggestion.chapterLinkSelector
+                                        chapterContentSelector = suggestion.chapterContentSelector
+                                        chapterTitleSelector = suggestion.chapterTitleSelector
+                                        removeSelector = suggestion.removeSelector
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (failure: Exception) {
+                                        aiScrapeError = failure.message ?: "Could not suggest scraper settings."
+                                    } finally {
+                                        aiScrapeBusy = false
+                                    }
+                                }
+                            }
+                        ) {
+                            if (aiScrapeBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (aiScrapeBusy) "Analyzing site…" else "Suggest selectors with Gemini")
+                        }
+                        Text("A sanitized sample from the table of contents and one chapter is sent to Gemini. Review the selectors before downloading.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        aiScrapeError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                     }
                     Text("Chapter pages are downloaded one at a time. Some sites may block automated access or need custom selectors.",
                         style = MaterialTheme.typography.bodySmall)
@@ -695,7 +876,9 @@ private fun PaperlightAppContent(
                         WebNovelScrapeOptions(
                             maxChapters = chapterLimit.toIntOrNull() ?: 2_000,
                             chapterLinkSelector = chapterLinkSelector,
-                            chapterContentSelector = chapterContentSelector
+                            chapterContentSelector = chapterContentSelector,
+                            chapterTitleSelector = chapterTitleSelector,
+                            removeSelector = removeSelector
                         ),
                         activeLibraryId ?: "default"
                     )

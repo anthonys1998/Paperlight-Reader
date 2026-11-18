@@ -2,7 +2,12 @@
 
 Vibe Reader is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.11.4-dev
+## Current milestone: 0.11.5-dev
+
+### Changes in 0.11.5
+
+- Add optional Gemini API support for website scraper selector suggestions and summaries of written reader notes. The app asks for a key only when an AI feature is used, and also provides Gemini key settings in the library menu. The key is encrypted in Android Keystore. Gemini receives sanitized samples for scraper suggestions and written notes for summaries; highlighted book passages are excluded. API quota and data handling follow the user's Google AI project settings.
+- Swipe left from the library to browse supported books in a selected device folder and open a temporary copy without importing it into a library.
 
 ### Changes in 0.11.4
 - The library title opens a dropdown for All books and each named library.

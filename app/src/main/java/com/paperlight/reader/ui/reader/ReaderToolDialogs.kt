@@ -19,10 +19,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.data.ReaderAnnotation
+import com.paperlight.reader.ai.GeminiAiClient
+import com.paperlight.reader.ai.GeminiApiKeyStore
+import com.paperlight.reader.ui.GeminiApiKeyScreen
 import com.paperlight.reader.epub.EpubChapter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 internal data class ReaderSearchHit(val chapter: Int, val query: String, val occurrence: Int, val excerpt: String)
 
@@ -124,6 +128,15 @@ internal fun ReaderNotesDialog(
     onDismiss: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val keyStore = remember(context) { GeminiApiKeyStore(context) }
+    val aiClient = remember(context) { GeminiAiClient(context) }
+    var hasApiKey by remember { mutableStateOf(keyStore.hasKey()) }
+    var showApiKeyScreen by remember { mutableStateOf(false) }
+    var summary by remember(book.id) { mutableStateOf<String?>(null) }
+    var summaryError by remember(book.id) { mutableStateOf<String?>(null) }
+    var summarizing by remember(book.id) { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
     val otherNotes = otherBook?.let { readOther(it.id) }.orEmpty()
     val order = compareBy(ReaderAnnotation::chapter, ReaderAnnotation::start)
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -148,6 +161,46 @@ internal fun ReaderNotesDialog(
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("Current book", color = palette.accent, style = MaterialTheme.typography.labelLarge)
                             Text(book.title, style = MaterialTheme.typography.headlineSmall)
+                        }
+                    }
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(
+                                enabled = !summarizing && annotations.any { it.note.isNotBlank() },
+                                onClick = {
+                                    if (!hasApiKey) showApiKeyScreen = true
+                                    else coroutineScope.launch {
+                                        summarizing = true
+                                        summaryError = null
+                                        try {
+                                            summary = aiClient.summarizeNotes(annotations)
+                                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                            throw cancelled
+                                        } catch (failure: Exception) {
+                                            summaryError = failure.message ?: "Could not summarize these notes."
+                                        } finally {
+                                            summarizing = false
+                                        }
+                                    }
+                                }
+                            ) {
+                                if (summarizing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                else Text("Summarize my notes with Gemini")
+                            }
+                            Text(
+                                "Only your written notes are sent to Gemini for this summary; highlighted book text is excluded.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.ink.copy(alpha = .72f)
+                            )
+                            summary?.let { result ->
+                                OutlinedCard(Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("Summary of your notes", style = MaterialTheme.typography.titleSmall)
+                                        Text(result, style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                }
+                            }
+                            summaryError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                         }
                     }
                     if (annotations.isEmpty()) item {
@@ -190,6 +243,10 @@ internal fun ReaderNotesDialog(
             }
         }
     }
+    if (showApiKeyScreen) GeminiApiKeyScreen(
+        onClose = { showApiKeyScreen = false },
+        onSaved = { hasApiKey = keyStore.hasKey() },
+    )
 }
 
 @Composable
