@@ -14,6 +14,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.InsertDriveFile
+import androidx.compose.material.icons.rounded.MenuBook
+import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -67,9 +73,11 @@ internal fun FileManagerScreen(onOpenFile: (ExternalBookFile) -> Unit) {
                 ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }) ?: emptyList()
         }
     }
-    Column(Modifier.fillMaxSize()) {
-        Text("Device files", Modifier.padding(start = 20.dp, top = 20.dp, bottom = 8.dp),
-            style = MaterialTheme.typography.headlineSmall)
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+        Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+            Text("Device files", Modifier.fillMaxWidth().padding(start = 20.dp, top = 20.dp, bottom = 16.dp),
+                style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface)
+        }
         if (!hasAccess) {
             Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally) {
@@ -102,8 +110,26 @@ internal fun FileManagerScreen(onOpenFile: (ExternalBookFile) -> Unit) {
             } else LazyColumn(Modifier.fillMaxSize()) {
                 items(entries, key = { it.absolutePath }) { entry ->
                     ListItem(
+                        leadingContent = {
+                            val format = BookRepository.formatOf(entry.name)
+                            val icon = when {
+                                entry.isDirectory -> Icons.Rounded.Folder
+                                format == "PDF" -> Icons.Rounded.PictureAsPdf
+                                format == "EPUB" -> Icons.Rounded.MenuBook
+                                format == "TXT" -> Icons.Rounded.Description
+                                else -> Icons.Rounded.InsertDriveFile
+                            }
+                            val tint = when {
+                                entry.isDirectory -> MaterialTheme.colorScheme.primary
+                                format == "PDF" -> MaterialTheme.colorScheme.error
+                                format == "EPUB" -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.secondary
+                            }
+                            Icon(icon, contentDescription = null, tint = tint)
+                        },
                         headlineContent = { Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(if (entry.isDirectory) "Folder" else BookRepository.formatOf(entry.name).orEmpty()) },
+                        supportingContent = { Text(if (entry.isDirectory) "Folder" else "${BookRepository.formatOf(entry.name)} file") },
+                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
                         modifier = Modifier.clickable {
                             if (entry.isDirectory) path = entry.absolutePath
                             else onOpenFile(ExternalBookFile(Uri.fromFile(entry), entry.name))

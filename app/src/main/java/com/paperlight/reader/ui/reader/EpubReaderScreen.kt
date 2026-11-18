@@ -335,7 +335,10 @@ fun EpubReaderScreen(
     val chapterHtmlCache = remember(publication) { java.util.concurrent.ConcurrentHashMap<Int, String>() }
     LaunchedEffect(publication, chapterIndex) {
         withContext(Dispatchers.IO) {
-            val nearby = (chapterIndex - 1..chapterIndex + 1).filter { it in publication.chapters.indices }
+            // Prepare the current and next chapter first, so a forward turn can
+            // usually use cached HTML; keep the previous chapter warm for back turns.
+            val nearby = listOf(chapterIndex, chapterIndex + 1, chapterIndex - 1)
+                .filter { it in publication.chapters.indices }
             chapterHtmlCache.keys.filter { it !in nearby }.forEach { chapterHtmlCache.remove(it) }
             for (index in nearby) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
