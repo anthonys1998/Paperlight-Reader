@@ -6,6 +6,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.data.BookRepository
+import com.paperlight.reader.data.PdfEpubMode
+import java.io.File
 import com.paperlight.reader.webnovel.WebNovelScrapeOptions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -161,6 +163,32 @@ class LibraryViewModel(private val repository: BookRepository) : ViewModel() {
     val downloadProgress = _downloadProgress.asStateFlow()
 
     fun cancelDownload() { downloadJob?.cancel() }
+
+    private var conversionJob: kotlinx.coroutines.Job? = null
+    private val _conversionProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val conversionProgress = _conversionProgress.asStateFlow()
+
+    fun cancelConversion() { conversionJob?.cancel() }
+
+    fun convertPdf(source: File, fallbackTitle: String, mode: PdfEpubMode, libraryId: String) {
+        if (conversionJob?.isActive == true) return
+        _conversionProgress.value = 0 to 0
+        conversionJob = viewModelScope.launch {
+            try {
+                repository.convertPdfToEpub(source, fallbackTitle, mode, libraryId) { completed, total ->
+                    _conversionProgress.value = completed to total
+                }.fold(
+                    onSuccess = { _message.value = "Created ${it.title}.epub" },
+                    onFailure = { _message.value = it.message ?: "Could not convert this PDF." },
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                _message.value = "Conversion cancelled."
+                throw cancelled
+            } finally {
+                _conversionProgress.value = null
+            }
+        }
+    }
 
     fun createEpubFromUrl(
         url: String,

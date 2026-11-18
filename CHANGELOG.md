@@ -1,4 +1,4 @@
-## 1.0
+﻿## 1.1
 - Swiping right from the library opens the navigation menu. Swiping left continues to navigate to the in-app file explorer.
 - Remove Gemini voice playback. Read-aloud now uses Android text-to-speech, while Gemini API features remain available for other tasks.
 - Increase the EPUB reader’s top content margin so the first line and chapter headings sit lower on the page.

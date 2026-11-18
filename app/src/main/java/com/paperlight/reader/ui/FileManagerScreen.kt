@@ -43,7 +43,7 @@ internal data class ExternalBookFile(val uri: Uri, val name: String) {
     val format: String get() = BookRepository.formatOf(name).orEmpty()
 }
 
-internal enum class FileManagerMode { Browse, Import, Scan }
+internal enum class FileManagerMode { Browse, Import, Scan, ConvertPdf }
 
 /** A file explorer that stays inside the second page of the library pager. */
 @Composable
@@ -83,8 +83,12 @@ internal fun FileManagerScreen(
         produceState<Result<List<File>>?>(initialValue = null) {
             if (hasAccess) value = withContext(Dispatchers.IO) {
                 runCatching {
-                    checkNotNull(folder.listFiles()).filter {
-                        it.isDirectory || (mode != FileManagerMode.Scan && it.isFile && BookRepository.formatOf(it.name) != null)
+                    checkNotNull(folder.listFiles()).filter { entry ->
+                        entry.isDirectory || (entry.isFile && when (mode) {
+                            FileManagerMode.Scan -> false
+                            FileManagerMode.ConvertPdf -> BookRepository.formatOf(entry.name) == "PDF"
+                            else -> BookRepository.formatOf(entry.name) != null
+                        })
                     }.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
                 }
             }
@@ -100,6 +104,7 @@ internal fun FileManagerScreen(
                         FileManagerMode.Browse -> "Device files"
                         FileManagerMode.Import -> "Import books"
                         FileManagerMode.Scan -> "Scan folder"
+                        FileManagerMode.ConvertPdf -> "Choose a PDF"
                     },
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.headlineSmall,
@@ -141,6 +146,7 @@ internal fun FileManagerScreen(
                     when {
                         currentEntries == null -> "Folder contents unavailable."
                         mode == FileManagerMode.Scan -> "No subfolders here."
+                        mode == FileManagerMode.ConvertPdf -> "No folders or PDFs here."
                         else -> "No folders or supported books here."
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -186,7 +192,7 @@ internal fun FileManagerScreen(
                     HorizontalDivider()
                 }
             }
-            if (mode != FileManagerMode.Browse) {
+            if (mode == FileManagerMode.Import || mode == FileManagerMode.Scan) {
                 HorizontalDivider()
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.End) {

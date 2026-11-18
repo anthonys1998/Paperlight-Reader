@@ -96,6 +96,26 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
             }
         }
 
+    suspend fun convertPdfToEpub(
+        source: File,
+        fallbackTitle: String,
+        mode: PdfEpubMode,
+        libraryId: String,
+        onProgress: (Int, Int) -> Unit,
+    ): Result<BookEntity> {
+        val destination = File(context.cacheDir, "converted-${UUID.randomUUID()}.epub")
+        return try {
+            val (title, author) = PdfEpubConverter(context).convert(source, destination, fallbackTitle, mode, onProgress)
+            importGeneratedEpub(destination, title, author, libraryId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Result.failure(failure)
+        } finally {
+            destination.delete()
+        }
+    }
+
     suspend fun createEpubFromUrl(
         url: String,
         options: WebNovelScrapeOptions = WebNovelScrapeOptions(),
