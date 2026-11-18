@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.paperlight.reader.data.ReaderAnnotation
 import com.paperlight.reader.webnovel.WebNovelEpubUtility
+import com.paperlight.reader.webnovel.WebNovelScrapeOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -81,11 +82,15 @@ data class GeminiScrapeSuggestion(
     val bookTitle: String,
 )
 
-class GeminiAiClient(context: Context) {
+class GeminiAiClient(private val context: Context) {
     private val keyStore = GeminiApiKeyStore(context)
 
-    suspend fun suggestScrapeConfiguration(url: String): GeminiScrapeSuggestion = withContext(Dispatchers.IO) {
-        val samples = WebNovelEpubUtility().inspectForAi(url)
+    suspend fun suggestScrapeConfiguration(
+        url: String,
+        sampleChapterUrl: String = "",
+        options: WebNovelScrapeOptions = WebNovelScrapeOptions(),
+    ): GeminiScrapeSuggestion = withContext(Dispatchers.IO) {
+        val samples = WebNovelEpubUtility(context).inspectForAi(url, sampleChapterUrl, options)
         val prompt = """You configure a user-requested web-novel EPUB scraper. Read the sanitized HTML samples and return ONLY a JSON object with string fields: chapterLinkSelector, chapterContentSelector, chapterTitleSelector, removeSelector, bookTitle. Use valid CSS selectors only. Select chapter links on the table-of-contents page, the main readable chapter content, its title, and removable clutter. Do not return JavaScript, URLs to fetch, or explanations. If uncertain, use conservative selectors. bookTitle should be a short publication title.
 TOC HTML:
 ${samples.tocHtml}

@@ -74,6 +74,8 @@ import com.paperlight.reader.data.BookRepository
 import com.paperlight.reader.data.PdfEpubMode
 import com.paperlight.reader.ui.reader.EpubReaderScreen
 import com.paperlight.reader.webnovel.WebNovelScrapeOptions
+import com.paperlight.reader.webnovel.WebNovelEpubUtility
+import com.paperlight.reader.webnovel.WebNovelPreview
 import com.paperlight.reader.ai.GeminiAiClient
 import com.paperlight.reader.ai.GeminiApiKeyStore
 import java.io.File
@@ -186,6 +188,11 @@ private fun PaperlightAppContent(
     var pendingPdfTitle by rememberSaveable { mutableStateOf("") }
     var pdfConversionMode by rememberSaveable { mutableStateOf(PdfEpubMode.Text) }
     var novelUrl by remember { mutableStateOf("") }
+    var sampleChapterUrl by rememberSaveable { mutableStateOf("") }
+    var renderNovelInBrowser by rememberSaveable { mutableStateOf(false) }
+    var chapterPreview by remember { mutableStateOf<WebNovelPreview?>(null) }
+    var previewBusy by remember { mutableStateOf(false) }
+    var previewError by remember { mutableStateOf<String?>(null) }
     var chapterLimit by rememberSaveable { mutableStateOf("2000") }
     var chapterLinkSelector by remember { mutableStateOf("a[href]") }
     var chapterContentSelector by remember { mutableStateOf(".chapter-content, .chapter-body, #chapter-content, .read-content, .entry-content, article, main, #content") }
@@ -726,8 +733,8 @@ private fun PaperlightAppContent(
                 Column {
                     Text(pendingPdfTitle, style = MaterialTheme.typography.titleSmall)
                     PdfEpubMode.entries.forEach { mode ->
-                        val label = if (mode == PdfEpubMode.Text) "Reflowable text" else "Page images"
-                        val detail = if (mode == PdfEpubMode.Text) "Adjustable text size. Complex layouts may read out of order."
+                        val label = if (mode == PdfEpubMode.Text) "Reflowable text + OCR" else "Page images"
+                        val detail = if (mode == PdfEpubMode.Text) "Extracts selectable text and OCRs scanned pages. Complex layouts may still read out of order."
                             else "Preserves the page layout as images, without selectable text."
                         Row(
                             Modifier.fillMaxWidth().clickable { pdfConversionMode = mode }.padding(vertical = 10.dp),
@@ -896,8 +903,17 @@ private fun PaperlightAppContent(
         )
     }
     if (showCreateFromWeb) {
+        val options = WebNovelScrapeOptions(
+            maxChapters = chapterLimit.toIntOrNull() ?: 2_000,
+            chapterLinkSelector = chapterLinkSelector,
+            chapterContentSelector = chapterContentSelector,
+            chapterTitleSelector = chapterTitleSelector,
+            removeSelector = removeSelector,
+            renderInBrowser = renderNovelInBrowser,
+        )
+        val canCheckSite = !previewBusy && !aiScrapeBusy && novelUrl.startsWith("http", ignoreCase = true)
         AlertDialog(
-            onDismissRequest = { showCreateFromWeb = false },
+            onDismissRequest = { if (!previewBusy && !aiScrapeBusy) showCreateFromWeb = false },
             title = { Text("Create EPUB from website") },
             text = {
                 Column(
@@ -906,44 +922,120 @@ private fun PaperlightAppContent(
                 ) {
                     OutlinedTextField(
                         value = novelUrl,
-                        onValueChange = { novelUrl = it },
+                        onValueChange = {
+                            novelUrl = it
+                            chapterPreview = null
+                            previewError = null
+                        },
+                        enabled = !previewBusy && !aiScrapeBusy,
                         label = { Text("Table of contents URL") },
                         singleLine = true
                     )
+                    OutlinedTextField(
+                        value = sampleChapterUrl,
+                        onValueChange = {
+                            sampleChapterUrl = it
+                            chapterPreview = null
+                            previewError = null
+                        },
+                        label = { Text("Sample chapter URL (optional)") },
+                        singleLine = true,
+                        enabled = !previewBusy && !aiScrapeBusy,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = renderNovelInBrowser,
+                            onCheckedChange = {
+                                renderNovelInBrowser = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
+                        )
+                        Text("Render pages in browser")
+                    }
+                    TextButton(enabled = canCheckSite, onClick = {
+                        chapterPreview = null
+                        previewError = null
+                        previewBusy = true
+                        scope.launch {
+                            try {
+                                chapterPreview = WebNovelEpubUtility(context).preview(novelUrl, sampleChapterUrl, options)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Exception) {
+                                previewError = failure.message ?: "Could not preview the chapter."
+                            } finally {
+                                previewBusy = false
+                            }
+                        }
+                    }) { Text(if (previewBusy) "Loading preview…" else "Preview chapter") }
+                    chapterPreview?.let {
+                        Text("${it.chapterCount} chapters found", style = MaterialTheme.typography.labelMedium)
+                        Text(it.chapterTitle, style = MaterialTheme.typography.titleSmall)
+                        Text(it.excerpt, style = MaterialTheme.typography.bodySmall)
+                    }
+                    previewError?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
                     TextButton(onClick = { showScrapeOptions = !showScrapeOptions }) {
                         Text(if (showScrapeOptions) "Hide site selectors" else "Advanced site selectors")
                     }
                     if (showScrapeOptions) {
                         OutlinedTextField(value = chapterLimit,
-                            onValueChange = { chapterLimit = it.filter(Char::isDigit).take(5) },
+                            onValueChange = {
+                                chapterLimit = it.filter(Char::isDigit).take(5)
+                                chapterPreview = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Maximum chapters") }, singleLine = true,
                             supportingText = { Text("1–9,000. A longer book will ask you to increase this limit.") })
                         OutlinedTextField(
                             value = chapterLinkSelector,
-                            onValueChange = { chapterLinkSelector = it },
+                            onValueChange = {
+                                chapterLinkSelector = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Chapter link CSS selector") },
                             supportingText = { Text("Default: a[href]") }
                         )
                         OutlinedTextField(
                             value = chapterContentSelector,
-                            onValueChange = { chapterContentSelector = it },
+                            onValueChange = {
+                                chapterContentSelector = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Chapter content CSS selector") },
                             supportingText = { Text("Used when a site needs a custom selector") }
                         )
                         OutlinedTextField(
                             value = chapterTitleSelector,
-                            onValueChange = { chapterTitleSelector = it },
+                            onValueChange = {
+                                chapterTitleSelector = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Chapter title CSS selector") },
                             supportingText = { Text("Default: h1, h2") }
                         )
                         OutlinedTextField(
                             value = removeSelector,
-                            onValueChange = { removeSelector = it },
+                            onValueChange = {
+                                removeSelector = it
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            enabled = !previewBusy && !aiScrapeBusy,
                             label = { Text("Remove from chapter CSS selector") },
                             supportingText = { Text("Navigation, advertisements, comments, etc.") }
                         )
                         TextButton(
-                            enabled = !aiScrapeBusy && novelUrl.startsWith("http", ignoreCase = true),
+                            enabled = canCheckSite,
                             onClick = {
                                 aiScrapeError = null
                                 if (!GeminiApiKeyStore(context).hasKey()) showGeminiApiKeyScreen = true
@@ -951,8 +1043,10 @@ private fun PaperlightAppContent(
                                     aiScrapeBusy = true
                                     try {
                                         val suggestion = withContext(Dispatchers.IO) {
-                                            GeminiAiClient(context).suggestScrapeConfiguration(novelUrl)
+                                            GeminiAiClient(context).suggestScrapeConfiguration(novelUrl, sampleChapterUrl, options)
                                         }
+                                        chapterPreview = null
+                                        previewError = null
                                         chapterLinkSelector = suggestion.chapterLinkSelector
                                         chapterContentSelector = suggestion.chapterContentSelector
                                         chapterTitleSelector = suggestion.chapterTitleSelector
@@ -981,23 +1075,17 @@ private fun PaperlightAppContent(
                 }
             },
             confirmButton = {
-                TextButton(enabled = downloadProgress == null && novelUrl.startsWith("http", ignoreCase = true) &&
+                TextButton(enabled = downloadProgress == null && canCheckSite &&
                     chapterLimit.toIntOrNull()?.let { it in 1..9_000 } == true, onClick = {
                     viewModel.createEpubFromUrl(
                         novelUrl,
-                        WebNovelScrapeOptions(
-                            maxChapters = chapterLimit.toIntOrNull() ?: 2_000,
-                            chapterLinkSelector = chapterLinkSelector,
-                            chapterContentSelector = chapterContentSelector,
-                            chapterTitleSelector = chapterTitleSelector,
-                            removeSelector = removeSelector
-                        ),
+                        options,
                         activeLibraryId ?: "default"
                     )
                     showCreateFromWeb = false
                 }) { Text("Download and create") }
             },
-            dismissButton = { TextButton(onClick = { showCreateFromWeb = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(enabled = !previewBusy && !aiScrapeBusy, onClick = { showCreateFromWeb = false }) { Text("Cancel") } }
         )
     }
     candidates?.let { files ->

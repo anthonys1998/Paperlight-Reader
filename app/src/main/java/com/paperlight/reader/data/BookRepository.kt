@@ -124,7 +124,7 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
     ): Result<BookEntity> {
         val tempFile = File(context.cacheDir, "webnovel-${UUID.randomUUID()}.epub")
         return try {
-            val generated = WebNovelEpubUtility().createEpub(url, tempFile, options, onProgress)
+            val generated = WebNovelEpubUtility(context).createEpub(url, tempFile, options, onProgress)
             importGeneratedEpub(generated.file, generated.title, libraryId = libraryId)
         } catch (cancelled: CancellationException) {
             throw cancelled
