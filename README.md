@@ -2,7 +2,11 @@
 
 Vibe Reader is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.11.2-dev
+## Current milestone: 0.11.4-dev
+
+### Changes in 0.11.4
+- The library title opens a dropdown for All books and each named library.
+- Added Accessibility settings for app interface text size, default book text size and reduced-motion page turns.
 
 ### Changes in 0.11.2
 - Large reflowable sections retain finger-tracked curl. Their sheet contains only measured visible text runs and media, avoiding a cloned full chapter.
@@ -39,6 +43,7 @@ Vibe Reader is an offline-first Android ebook reader project. Imported files are
 - Nested EPUB 2/3 contents and links to specific sections, with text-based position restoration during reflow.
 - A minimal top bar, labeled bottom actions, and a dedicated highlights and notes screen.
 - Light and dark reading palettes with optional paper textures.
+- Accessibility options for larger interface and book text and reduced-motion page turns.
 - Text-size adjustment and previous/next page/chapter navigation.
 - Coarse reading progress persistence and restore (chapter plus approximate page fraction).
 - Basic archive safety checks (path traversal rejection, entry-count and expanded-size limits) and stripping of publication scripts/inline event handlers before WebView rendering.

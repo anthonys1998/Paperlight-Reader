@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ContextWrapper
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -11,9 +12,13 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
 @Composable
-internal fun ReaderImmersiveMode() {
+internal fun ReaderImmersiveMode(dark: Boolean = false) {
     val context = LocalContext.current
     val mainView = LocalView.current
+    SideEffect {
+        val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }.filterIsInstance<Activity>().firstOrNull()
+        activity?.let { WindowCompat.getInsetsController(it.window, mainView).isAppearanceLightStatusBars = !dark }
+    }
     val readerLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     DisposableEffect(mainView, readerLifecycle) {
         val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
@@ -39,7 +44,8 @@ internal fun ReaderImmersiveMode() {
         }
         fun immerse() {
             controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            controller?.hide(WindowInsetsCompat.Type.systemBars())
+            controller?.show(WindowInsetsCompat.Type.statusBars())
+            controller?.hide(WindowInsetsCompat.Type.navigationBars())
         }
         val focus = android.view.ViewTreeObserver.OnWindowFocusChangeListener { focused -> if (focused) immerse() }
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->

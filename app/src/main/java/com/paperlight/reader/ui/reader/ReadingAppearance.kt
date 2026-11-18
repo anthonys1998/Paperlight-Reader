@@ -22,9 +22,12 @@ internal data class ReadingAppearance(
     val font: String = "serif",
     val alignment: String = "original",
     val texture: String = "none",
+    val letterSpacing: Float = 0f,
+    val paragraphSpacing: Float = 1f,
 ) {
     fun json() = JSONObject().put("size", size.toDouble()).put("lineHeight", lineHeight.toDouble())
         .put("margins", margins).put("font", font).put("alignment", alignment).put("texture", texture)
+        .put("letterSpacing", letterSpacing.toDouble()).put("paragraphSpacing", paragraphSpacing.toDouble())
 }
 
 internal data class ReaderPalette(val paper: Color, val ink: Color, val panel: Color, val accent: Color)
@@ -117,13 +120,7 @@ internal fun ReadingAppearanceDialog(
                         FilterChip(selected = theme == index, onClick = { onTheme(index) }, label = { Text(label) })
                     }
                 }
-                Text("Paper texture", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("none" to "None", "grain" to "Grain", "linen" to "Linen").forEach { (texture, label) ->
-                        FilterChip(selected = value.texture == texture,
-                            onClick = { onChange(value.copy(texture = texture)) }, label = { Text(label) })
-                    }
-                }
+                TexturePicker(value.texture, palette.paper, palette.ink) { onChange(value.copy(texture = it)) }
                 Text("Typeface", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("serif" to "Serif", "sans-serif" to "Sans", "monospace" to "Mono").forEach { (font, label) ->
@@ -135,14 +132,20 @@ internal fun ReadingAppearanceDialog(
                         onClick = { onChange(value.copy(font = "custom")) }, label = { Text("Imported font") })
                     TextButton(onClick = onImport) { Text("Import font", color = palette.accent) }
                 }
-                AppearanceSlider("Text size", "${(value.size * 100).roundToInt()}%", value.size, .7f..1.8f) {
+                AppearanceSlider("Text size", "${(value.size * 100).roundToInt()}%", value.size, .6f..2.4f) {
                     onChange(value.copy(size = it))
                 }
-                AppearanceSlider("Line spacing", "${(value.lineHeight * 100).roundToInt()}%", value.lineHeight, 1.2f..2.2f) {
+                AppearanceSlider("Line spacing", "${(value.lineHeight * 100).roundToInt()}%", value.lineHeight, 1.1f..2.6f) {
                     onChange(value.copy(lineHeight = it))
                 }
-                AppearanceSlider("Margins", "${value.margins}", value.margins.toFloat(), 12f..42f) {
+                AppearanceSlider("Margins", "${value.margins}", value.margins.toFloat(), 8f..64f) {
                     onChange(value.copy(margins = it.roundToInt()))
+                }
+                AppearanceSlider("Letter spacing", "${value.letterSpacing.roundToInt()}%", value.letterSpacing, -2f..12f) {
+                    onChange(value.copy(letterSpacing = it))
+                }
+                AppearanceSlider("Paragraph spacing", "${(value.paragraphSpacing * 100).roundToInt()}%", value.paragraphSpacing, 0f..2f) {
+                    onChange(value.copy(paragraphSpacing = it))
                 }
                 Text("Alignment", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -9,6 +9,14 @@
 
 # Manual test checklist — EPUB milestone
 
+## Accessibility and library navigation
+
+- Tap the library title and switch among All books and several named libraries. Confirm the displayed book set updates and the active library is marked.
+- Open the drawer's Accessibility screen. Increase and reduce interface text size; confirm the setting persists after restarting the app.
+- Change book text size, open an EPUB or text book, and confirm the saved default is applied. Confirm the normal appearance controls can still adjust it.
+- Enable Reduce motion and confirm EPUB page turns are immediate and PDF/comic page transitions do not slide. Confirm canceled swipes settle immediately.
+- Reset accessibility settings and confirm interface/book text return to 100% and reduced motion is disabled.
+
 The project has not been compiled or run in this environment. Once opened in Android Studio and installed on a device, validate the following before treating this milestone as usable:
 
 1. Import a small EPUB with at least 3 chapters and confirm it appears in the library.

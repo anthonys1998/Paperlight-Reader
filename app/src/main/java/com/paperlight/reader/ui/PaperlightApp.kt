@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -46,6 +47,8 @@ import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -54,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -74,6 +78,50 @@ private data class FolderBook(val uri: Uri, val name: String)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PaperlightApp(viewModel: LibraryViewModel) {
+    val context = LocalContext.current
+    val accessibilityPreferences = remember(context) { context.getSharedPreferences("accessibility", 0) }
+    val readerPreferences = remember(context) { context.getSharedPreferences("reader", 0) }
+    var uiTextScale by rememberSaveable {
+        mutableFloatStateOf(accessibilityPreferences.getFloat("uiTextScale", 1f).coerceIn(.85f, 1.5f))
+    }
+    var reduceMotion by rememberSaveable { mutableStateOf(accessibilityPreferences.getBoolean("reduceMotion", false)) }
+    var readingTextScale by rememberSaveable {
+        mutableFloatStateOf(readerPreferences.getFloat("textSize", 1f).coerceIn(.7f, 2.2f))
+    }
+    val baseDensity = LocalDensity.current
+    CompositionLocalProvider(LocalDensity provides androidx.compose.ui.unit.Density(baseDensity.density, baseDensity.fontScale * uiTextScale)) {
+        PaperlightAppContent(
+            viewModel = viewModel,
+            uiTextScale = uiTextScale,
+            reduceMotion = reduceMotion,
+            readingTextScale = readingTextScale,
+            onUiTextScaleChange = { value ->
+                uiTextScale = value.coerceIn(.85f, 1.5f)
+                accessibilityPreferences.edit().putFloat("uiTextScale", uiTextScale).apply()
+            },
+            onReduceMotionChange = { value ->
+                reduceMotion = value
+                accessibilityPreferences.edit().putBoolean("reduceMotion", value).apply()
+            },
+            onReadingTextScaleChange = { value ->
+                readingTextScale = value.coerceIn(.7f, 2.2f)
+                readerPreferences.edit().putFloat("textSize", readingTextScale).apply()
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PaperlightAppContent(
+    viewModel: LibraryViewModel,
+    uiTextScale: Float,
+    reduceMotion: Boolean,
+    readingTextScale: Float,
+    onUiTextScaleChange: (Float) -> Unit,
+    onReduceMotionChange: (Boolean) -> Unit,
+    onReadingTextScaleChange: (Float) -> Unit,
+) {
     val books by viewModel.books.collectAsState()
     val libraries by viewModel.libraries.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
@@ -97,8 +145,10 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     val libraryBusy by viewModel.libraryBusy.collectAsState()
     var libraryError by remember { mutableStateOf<String?>(null) }
     var showStatistics by remember { mutableStateOf(false) }
+    var showAccessibility by remember { mutableStateOf(false) }
     var pendingRestore by remember { mutableStateOf<Uri?>(null) }
     var showMoreActions by remember { mutableStateOf(false) }
+    var showLibraryMenu by remember { mutableStateOf(false) }
     var showCreateLibrary by remember { mutableStateOf(false) }
     var libraryName by remember { mutableStateOf("") }
     var showMoveBooks by remember { mutableStateOf(false) }
@@ -267,6 +317,9 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
                 NavigationDrawerItem(label = { Text("Reading statistics") }, selected = false,
                     icon = { Icon(Icons.Rounded.BarChart, null) }, onClick = { showStatistics = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
+                NavigationDrawerItem(label = { Text("Accessibility") }, selected = false,
+                    icon = { Icon(Icons.Rounded.Accessibility, null) }, onClick = { showAccessibility = true; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Export backup") }, selected = false,
                     icon = { Icon(Icons.Rounded.Backup, null) }, onClick = {
                         if (!libraryBusy) exportBackup.launch("VibeReader-backup.zip")
@@ -286,8 +339,37 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text(if (selectedBooks.isEmpty()) title else "${selectedBooks.size} selected",
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Serif) },
+                title = {
+                    if (selectedBooks.isNotEmpty()) {
+                        Text("${selectedBooks.size} selected", maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Serif)
+                    } else {
+                        Box {
+                            Row(
+                                Modifier.clickable { showLibraryMenu = true }.padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Serif)
+                                Icon(Icons.Rounded.ArrowDropDown, contentDescription = "Choose library")
+                            }
+                            DropdownMenu(expanded = showLibraryMenu, onDismissRequest = { showLibraryMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("All books") },
+                                    leadingIcon = { Icon(Icons.Rounded.LibraryBooks, null) },
+                                    trailingIcon = { if (activeLibraryId == null) Icon(Icons.Rounded.CheckCircle, "Current library") },
+                                    onClick = { activeLibraryId = null; selectedBooks = emptySet(); showLibraryMenu = false }
+                                )
+                                libraries.forEach { library ->
+                                    DropdownMenuItem(
+                                        text = { Text(library.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                        leadingIcon = { Icon(Icons.Rounded.MenuBook, null) },
+                                        trailingIcon = { if (activeLibraryId == library.id) Icon(Icons.Rounded.CheckCircle, "Current library") },
+                                        onClick = { activeLibraryId = library.id; selectedBooks = emptySet(); showLibraryMenu = false }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = { if (selectedBooks.isEmpty()) scope.launch { drawer.open() } else selectedBooks = emptySet() }) {
                         Icon(if (selectedBooks.isEmpty()) Icons.Rounded.Menu else Icons.Rounded.Close,
@@ -431,6 +513,50 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
     }
 
     if (showStatistics) ReadingStatisticsDialog(books) { showStatistics = false }
+    if (showAccessibility) {
+        AlertDialog(
+            onDismissRequest = { showAccessibility = false },
+            title = { Text("Accessibility") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Interface text size", style = MaterialTheme.typography.titleSmall)
+                    Slider(
+                        value = uiTextScale,
+                        onValueChange = onUiTextScaleChange,
+                        valueRange = .85f..1.5f,
+                        steps = 12
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Smaller")
+                        Text("${(uiTextScale * 100).toInt()}%", style = MaterialTheme.typography.labelLarge)
+                        Text("Larger")
+                    }
+                    Text("Book text size", style = MaterialTheme.typography.titleSmall)
+                    Slider(
+                        value = readingTextScale,
+                        onValueChange = onReadingTextScaleChange,
+                        valueRange = .7f..2.2f,
+                        steps = 14
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Smaller")
+                        Text("${(readingTextScale * 100).toInt()}%", style = MaterialTheme.typography.labelLarge)
+                        Text("Larger")
+                    }
+                    HorizontalDivider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Reduce motion", style = MaterialTheme.typography.titleSmall)
+                            Text("Use instant page turns and shorter settling animations.", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(checked = reduceMotion, onCheckedChange = onReduceMotionChange)
+                    }
+                    TextButton(onClick = { onUiTextScaleChange(1f); onReadingTextScaleChange(1f); onReduceMotionChange(false) }) { Text("Reset accessibility settings") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showAccessibility = false }) { Text("Done") } }
+        )
+    }
     pendingRestore?.let { uri ->
         AlertDialog(onDismissRequest = { pendingRestore = null }, title = { Text("Restore backup?") },
             text = { Text("Books, libraries, reading progress, notes and bookmarks will be imported. Books already present will be skipped.") },
@@ -650,8 +776,12 @@ private fun BookTile(
                 modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp))
             if (selected) Icon(Icons.Rounded.CheckCircle, "Selected", tint = Color(0xFFFFD36A),
                 modifier = Modifier.align(Alignment.TopStart).padding(4.dp).size(22.dp))
-            if (artwork == null) Text(book.format, color = Color.White, modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
-                style = MaterialTheme.typography.labelSmall)
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .background(Color(0xC918211E)).padding(horizontal = 7.dp, vertical = 5.dp)) {
+                Text("${(book.progress * 100).toInt()}%", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                LinearProgressIndicator(progress = { book.progress }, color = Color(0xFFE4CD92),
+                    trackColor = Color(0xFF55605B), modifier = Modifier.fillMaxWidth().height(2.dp))
+            }
         }
 
     }
@@ -678,21 +808,7 @@ private fun ShelfRow(
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().background(Color(0xFF493021))
-            .padding(start = 20.dp, end = 20.dp, top = 3.dp, bottom = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            repeat(3) { index ->
-                Column(Modifier.weight(1f)) {
-                    val book = books.getOrNull(index)
-                    Text(book?.let { "${(it.progress * 100).toInt()}%" } ?: " ",
-                        color = Color(0xFFF4E8D5), style = MaterialTheme.typography.labelSmall)
-                    Spacer(Modifier.height(3.dp))
-                    if (book != null) LinearProgressIndicator(progress = { book.progress }, color = Color(0xFFDBC38E),
-                        trackColor = Color(0xFF281D15), modifier = Modifier.fillMaxWidth().height(3.dp))
-                    else Spacer(Modifier.height(3.dp))
-                }
-            }
-        }
+
     }
 }
 

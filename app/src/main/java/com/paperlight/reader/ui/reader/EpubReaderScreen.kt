@@ -94,9 +94,9 @@ fun EpubReaderScreen(
 ) {
     val context = LocalContext.current
     val mainView = LocalView.current
-    ReaderImmersiveMode()
     val latestProgress by rememberUpdatedState(onProgress)
     val preferences = remember { context.getSharedPreferences("reader", 0) }
+    val reduceMotion = remember { context.getSharedPreferences("accessibility", 0).getBoolean("reduceMotion", false) }
     val bookmarkStore = remember(context) { BookmarkStore(context) }
     val annotationStore = remember(context) { ReaderAnnotationStore(context) }
     var annotations by remember(book.id) { mutableStateOf(annotationStore.read(book.id)) }
@@ -131,7 +131,8 @@ fun EpubReaderScreen(
     val snapshotProgress = remember(book.id) { androidx.compose.animation.core.Animatable(0f) }
     LaunchedEffect(snapshotReady, chapterSnapshot) {
         if (snapshotReady && chapterSnapshot != null) {
-            snapshotProgress.animateTo(1f, androidx.compose.animation.core.tween(180))
+            if (reduceMotion) snapshotProgress.snapTo(1f)
+            else snapshotProgress.animateTo(1f, androidx.compose.animation.core.tween(180))
             chapterSnapshot = null
             snapshotReady = false
             snapshotProgress.snapTo(0f)
@@ -158,6 +159,7 @@ fun EpubReaderScreen(
             preferences.getInt("margins", 24), preferences.getString("font", "serif") ?: "serif",
             preferences.getString("alignment", "original") ?: "original",
             preferences.getString("texture", "none") ?: "none",
+            preferences.getFloat("letterSpacing", 0f), preferences.getFloat("paragraphSpacing", 1f),
         ))
     }
     var customFont by remember { mutableStateOf<String?>(null) }
@@ -178,7 +180,7 @@ fun EpubReaderScreen(
     LaunchedEffect(appearance, themeMode) {
         preferences.edit().putInt("lightDarkPalette", themeMode).putFloat("textSize", appearance.size)
             .putFloat("lineHeight", appearance.lineHeight).putInt("margins", appearance.margins)
-            .putString("font", appearance.font).putString("alignment", appearance.alignment).putString("texture", appearance.texture).apply()
+            .putFloat("letterSpacing", appearance.letterSpacing).putFloat("paragraphSpacing", appearance.paragraphSpacing).putString("font", appearance.font).putString("alignment", appearance.alignment).putString("texture", appearance.texture).apply()
     }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var sentFont: String? by remember { mutableStateOf(null) }
@@ -225,6 +227,7 @@ fun EpubReaderScreen(
         publication.chapters.mapIndexed { index, entry -> titles[index] ?: entry.title }
     }
     val chapter = publication.chapters[chapterIndex]
+    ReaderImmersiveMode(dark = themeMode == 1)
     val palette = readerPalettes[themeMode]
     val background = palette.paper
     SideEffect {
@@ -359,7 +362,7 @@ fun EpubReaderScreen(
 
     ReaderTheme(palette, dark = themeMode == 1) {
         Box(Modifier.fillMaxSize().background(background)) {
-            Box(Modifier.matchParentSize().padding(bottom = 23.dp)
+            Box(Modifier.matchParentSize().statusBarsPadding().padding(bottom = 23.dp)
                 .onSizeChanged { viewport = it }) {
                 AndroidView(
                     modifier = Modifier.matchParentSize(),
@@ -496,7 +499,7 @@ fun EpubReaderScreen(
                                     val loadingChapter = chapterIndex
                                     view.evaluateJavascript("window.paperlightInitialAppearance = ${appearance.json()};" + buildReaderScript(
                                         themeMode, appearance.size, fraction, scrollMode, loadingChapter,
-                                        view.width, view.height, flip,
+                                        view.width, view.height, flip, reduceMotion,
                                         lastChapterIndex = publication.chapters.lastIndex,
                                     )) {
                                         if (chapterIndex == loadingChapter) {
@@ -1040,7 +1043,7 @@ private fun viewNext(view: WebView?, direction: Int) {
     view?.evaluateJavascript("window.paperlightMove($direction)", null)
 }
 
-private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean, lastChapterIndex: Int): String = """
+private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean, reduceMotion: Boolean, lastChapterIndex: Int): String = """
 (function(){
  const palettes={white:{bg:'#F9F9F5',fg:'#2C302E',link:'#395F55'},dark:{bg:'#1D201F',fg:'#E1DFD5',link:'#B4CA9A'}};
  let mode=${when (themeMode) { 1 -> "'dark'"; else -> "'white'" }};
@@ -1106,7 +1109,8 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  viewport.appendChild(endSpacer);
  document.body.appendChild(viewport);
  document.body.appendChild(fold);
- for(const image of content.querySelectorAll?.('img[loading="lazy"]')||[]) image.loading='eager';
+ const deferImages=(content.querySelectorAll?.('img')||[]).length>48;
+ for(const image of content.querySelectorAll?.('img')||[]) image.loading=deferImages&&image.hasAttribute('width')&&image.hasAttribute('height')?'lazy':'eager';
  const coverMedia=content.querySelector?.('img,svg');
  const contentText=content.textContent||'';
  const imageOnly=coverMedia&&!contentText.trim()&&content.querySelectorAll('img,svg').length===1;
@@ -1146,7 +1150,9 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    const contentWidth=Math.max(1,width-2*margin);
    const contentHeight=Math.max(1,height-2*margin);
    const family=type.font==='custom'?(customFontReady?'PaperlightCustom, serif':'serif'):type.font;
-   const texture=type.texture==='linen'
+   const texture=type.texture==='grid'
+     ? 'repeating-linear-gradient(0deg,transparent 0 19px,rgba(128,128,128,.11) 19px 20px),repeating-linear-gradient(90deg,transparent 0 19px,rgba(128,128,128,.11) 19px 20px)'
+     : type.texture==='linen'
      ? 'repeating-linear-gradient(0deg,transparent 0 3px,rgba(128,128,128,.065) 3px 4px),repeating-linear-gradient(90deg,transparent 0 3px,rgba(128,128,128,.065) 3px 4px)'
      : type.texture==='grain'
        ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath fill='%23808080' opacity='.10' filter='url(%23n)' d='M0 0h160v160H0z'/%3E%3C/svg%3E")`
@@ -1173,7 +1179,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
        font-family:${'$'}{family}!important;line-height:${'$'}{type.lineHeight}!important;
      }
      .paperlight-content :is(p,li,dd,blockquote){
-       font-family:${'$'}{family}!important;line-height:${'$'}{type.lineHeight}!important;${'$'}{alignment}
+       font-family:${'$'}{family}!important;line-height:${'$'}{type.lineHeight}!important;letter-spacing:${'$'}{(type.letterSpacing||0)/100}em!important;margin-bottom:${'$'}{type.paragraphSpacing??1}em!important;${'$'}{alignment}
      }
      .paperlight-content.paperlight-cover{
        position:relative!important;display:block!important;
@@ -1239,7 +1245,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  configureMode();
  let flip=$flip;
  window.paperlightSetFlip=function(enabled){flip=enabled;};
- const reducedMotion=()=>window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+ const reducedMotion=()=>$reduceMotion||window.matchMedia('(prefers-reduced-motion: reduce)').matches;
  // Keep a real adjacent page beneath the turning sheet. Both directions use
  // the SAME right-to-left fold, with time reversed for a backward turn.
  // Record only the text runs and media actually intersecting one page.

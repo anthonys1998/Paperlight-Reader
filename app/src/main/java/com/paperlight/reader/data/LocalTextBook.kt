@@ -13,7 +13,7 @@ internal fun openLocalText(book: BookEntity, directory: File): EpubBook {
     val source = File(book.localPath)
     val limit = if (book.format == "TXT") 16L * 1024 * 1024 else 64L * 1024 * 1024
     require(source.length() in 1..limit) { "This ${book.format} file is empty or too large to open." }
-    val stamp = "1:${source.length()}:${source.lastModified()}"
+    val stamp = "2:${source.length()}:${source.lastModified()}"
     val marker = File(directory, ".prepared-text")
     val cached = if (marker.isFile && runCatching { marker.readText() }.getOrNull() == stamp) {
         preparedChapters(directory, if (book.format == "TXT") "text-" else "part")
@@ -88,6 +88,7 @@ internal object KindleImport {
         }
         return preparedChapters(directory, "part").also {
             require(it.isNotEmpty()) { "This Kindle file has no readable reflowable sections." }
+            it.forEach { chapter -> reserveImageSpace(chapter.file, directory) }
         }
     }
 }
@@ -98,3 +99,22 @@ private fun preparedChapters(directory: File, prefix: String): List<EpubChapter>
         val number = file.nameWithoutExtension.removePrefix(prefix).toIntOrNull() ?: return@mapNotNull null
         number to file
     }.sortedBy { it.first }.mapIndexed { index, (_, file) -> EpubChapter("Section ${index + 1}", file) }
+
+private fun reserveImageSpace(file: File, root: File) {
+    val document = org.jsoup.Jsoup.parse(file, "UTF-8")
+    var changed = false
+    for (image in document.select("img[src]")) {
+        if (image.hasAttr("width") || image.hasAttr("height")) continue
+        val source = image.attr("src").substringBefore('#').substringBefore('?')
+        if (source.contains(":") || source.startsWith("//")) continue
+        val resource = File(file.parentFile, android.net.Uri.decode(source)).canonicalFile
+        if (!resource.path.startsWith(root.canonicalPath + File.separator) || !resource.isFile) continue
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(resource.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) continue
+        image.attr("width", bounds.outWidth.toString()).attr("height", bounds.outHeight.toString())
+        image.attr("style", image.attr("style") + ";height:auto;")
+        changed = true
+    }
+    if (changed) file.writeText(document.outerHtml(), Charsets.UTF_8)
+}

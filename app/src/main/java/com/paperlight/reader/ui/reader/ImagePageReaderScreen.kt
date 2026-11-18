@@ -67,6 +67,7 @@ import com.paperlight.reader.data.RenderedPage
 import com.paperlight.reader.data.renderComicPage
 import com.paperlight.reader.data.renderPdfPage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -83,10 +84,10 @@ private fun imageReaderPalette(dark: Boolean) = if (dark) ImageReaderPalette(
 @Composable
 internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgress: (Float) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    ReaderImmersiveMode()
     val pdfSource = remember(book.id) { if (book.format == "PDF") PdfPageSource(book.localPath) else null }
     DisposableEffect(pdfSource) { onDispose { pdfSource?.close() } }
     val preferences = remember(context) { context.getSharedPreferences("reader", 0) }
+    val reduceMotion = remember(context) { context.getSharedPreferences("accessibility", 0).getBoolean("reduceMotion", false) }
     var position by rememberSaveable(book.id) { mutableFloatStateOf(book.progress) }
     var page by remember(book.id) { mutableStateOf<RenderedPage?>(null) }
     var error by remember(book.id) { mutableStateOf<String?>(null) }
@@ -96,6 +97,9 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     var texture by remember { mutableStateOf(preferences.getString("texture", "none") ?: "none") }
     var turningDirection by remember { mutableIntStateOf(1) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
+    var swipeCommitted by remember { mutableStateOf(false) }
+    var turnStartFraction by remember { mutableFloatStateOf(0f) }
+    ReaderImmersiveMode(dark)
     val palette = imageReaderPalette(dark)
     var barsVisible by rememberSaveable { mutableStateOf(false) }
     var singleTap by remember { mutableStateOf(preferences.getBoolean("singleTapBars", false)) }
@@ -119,7 +123,7 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     var pageInput by remember { mutableStateOf("") }
     val ready = (continuous && page != null && error == null) || page?.let { kotlin.math.round((it.count - 1) * position).toInt() == it.index } == true && error == null
 
-    val currentReady by rememberUpdatedState(ready)
+    val currentReady by rememberUpdatedState(ready && !swipeCommitted)
 
     fun goTo(index: Int) {
         val current = page ?: return
@@ -159,6 +163,14 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
             }
         }
     }
+    LaunchedEffect(page?.index) {
+        if (swipeCommitted) {
+            delay(350)
+            dragOffset = 0f
+            swipeCommitted = false
+            turnStartFraction = 0f
+        }
+    }
     LaunchedEffect(continuous, page?.count) {
         if (continuous && page != null) {
             scrollState.scrollToItem(kotlin.math.round((page!!.count - 1) * position).toInt())
@@ -174,14 +186,17 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     }
     ReaderTheme(ReaderPalette(palette.paper, palette.ink, palette.panel, palette.accent), dark) {
     Box(Modifier.fillMaxSize().background(palette.paper)) {
-        Box(Modifier.fillMaxSize().padding(bottom = 24.dp).clipToBounds()
+        Box(Modifier.fillMaxSize().statusBarsPadding().padding(bottom = 24.dp).clipToBounds()
             .pointerInput(singleTap) {
                 detectTapGestures(onTap = { if (singleTap) barsVisible = !barsVisible },
                     onDoubleTap = { if (!singleTap) barsVisible = !barsVisible })
             }
             .then(if (continuous) Modifier else Modifier.pointerInput(book.id, fitWidth) {
+                var settling: kotlinx.coroutines.Job? = null
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    settling?.cancel()
+                    if (!currentReady) return@awaitEachGesture
                     var accumulated = Offset.Zero
                     var swiping = false
                     var transformed = false
@@ -218,9 +233,19 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                     } while (pressed)
                     if (swiping && currentReady && abs(dragOffset) > size.width * .20f) {
                         val current = page
-                        if (current != null) goTo(current.index + if (dragOffset < 0) 1 else -1)
+                        val direction = if (dragOffset < 0) 1 else -1
+                        if (current != null && current.index + direction in 0 until current.count) {
+                            swipeCommitted = true
+                            turnStartFraction = abs(dragOffset) / size.width
+                            goTo(current.index + direction)
+                        } else dragOffset = 0f
+                    } else {
+                        val start = dragOffset
+                        if (reduceMotion) dragOffset = 0f
+                        else settling = scope.launch {
+                            androidx.compose.animation.core.animate(start, 0f, animationSpec = androidx.compose.animation.core.tween(120)) { value, _ -> dragOffset = value }
+                        }
                     }
-                    dragOffset = 0f
                 }
             }), contentAlignment = Alignment.Center) {
             val current = page
@@ -239,11 +264,13 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                     }
                 }
                 else -> {
+                    val transitionStart = turnStartFraction
                     AnimatedContent(
                         targetState = current,
                         transitionSpec = {
-                            if (turningDirection > 0) slideInHorizontally { it }.togetherWith(slideOutHorizontally { -it })
-                            else slideInHorizontally { -it }.togetherWith(slideOutHorizontally { it })
+                            if (reduceMotion) androidx.compose.animation.EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None
+                            else if (turningDirection > 0) slideInHorizontally { (it * (1f - transitionStart)).toInt() }.togetherWith(slideOutHorizontally { -it })
+                            else slideInHorizontally { (-it * (1f - transitionStart)).toInt() }.togetherWith(slideOutHorizontally { it })
                         },
                         contentKey = { it.index },
                         label = "image page turn"
@@ -252,7 +279,7 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                         Box(Modifier.fillMaxSize().background(palette.paper).graphicsLayer {
                             scaleX = zoom
                             scaleY = zoom
-                            translationX = pan.x + dragOffset
+                            translationX = pan.x + if (swipeCommitted && shown.index == current.index) 0f else dragOffset
                             translationY = pan.y
                         }.then(if (fitWidth) Modifier.verticalScroll(scroll, enabled = zoom <= 1.01f) else Modifier)) {
                             Image(shown.bitmap.asImageBitmap(), "Page ${shown.index + 1}",
@@ -264,14 +291,14 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
             }
             if (texture != "none") {
                 Canvas(Modifier.matchParentSize()) {
-                    val step = if (texture == "linen") 5.dp.toPx() else 7.dp.toPx()
+                    val step = if (texture == "grid") 20.dp.toPx() else if (texture == "linen") 4.dp.toPx() else 7.dp.toPx()
                     val alpha = if (texture == "linen") .035f else .022f
                     var y = 0f
                     while (y < size.height) {
                         drawLine(palette.ink.copy(alpha = alpha), Offset(0f, y), Offset(size.width, y))
                         y += step
                     }
-                    if (texture == "linen") {
+                    if (texture == "linen" || texture == "grid") {
                         var x = 0f
                         while (x < size.width) {
                             drawLine(palette.ink.copy(alpha = alpha), Offset(x, 0f), Offset(x, size.height))
@@ -384,12 +411,7 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                     FilterChip(selected = !continuous, onClick = { continuous = false; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageContinuous", false).apply() }, label = { Text("Pages") })
                     FilterChip(selected = continuous, onClick = { continuous = true; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageContinuous", true).apply() }, label = { Text("Scroll") })
                 }
-                Text("Paper texture", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("none" to "Plain", "grain" to "Grain", "linen" to "Linen").forEach { (value, label) ->
-                        FilterChip(selected = texture == value, onClick = { texture = value; preferences.edit().putString("texture", value).apply() }, label = { Text(label) })
-                    }
-                }
+                TexturePicker(texture, palette.paper, palette.ink) { texture = it; preferences.edit().putString("texture", it).apply() }
                 OutlinedTextField(value = pageInput, onValueChange = { pageInput = it.filter(Char::isDigit).take(6) },
                     label = { Text("Go to page") }, singleLine = true)
                 TextButton(enabled = pageInput.toIntOrNull()?.let { it in 1..(page?.count ?: 0) } == true,

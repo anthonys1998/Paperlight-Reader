@@ -1,3 +1,12 @@
+## 0.11.3-dev
+- Remove shelf footer strips and overlay progress on book covers.
+- Keep the real status bar transparent, with theme-appropriate icons, while hiding navigation buttons.
+- Continue PDF swipe animations from the finger displacement and animate cancelled swipes back into place.
+- Add texture previews, a grid texture, letter spacing, paragraph spacing and expanded typography ranges.
+- Inspect the supplied MOBI with the same native decoder. It produces one 469,043-byte section with 5,748 tags and 632 images. Images already have dimensions, allowing distant illustrations to load lazily without losing reserved layout space.
+- Add dimension reservation for other reconstructed MOBI files that omit image dimensions.
+- Android builds and device performance remain unverified.
+
 ## 0.11.2-dev
 - Apply saved typography before first chapter layout and skip duplicate settings updates.
 - Remove forced slide fallback for large MOBI/EPUB sections. Curl sheets use measured visible text runs and media instead of a full-document clone for those sections.
@@ -115,6 +124,11 @@ Validation: navigation harness passes. Chromium could not launch in the authorin
 - Added EPUB scroll mode alongside pages and a Room migration for the last viewed chapter page count.
 
 # Changelog
+
+## 0.11.4-dev
+- Make the library title a dropdown for switching between All books and named libraries.
+- Add persistent accessibility controls for interface text size, default reading text size and reduced-motion page transitions.
+- Extend the navigation regression harness to cover the reduced-motion script setting.
 
 ## 0.3.0-dev
 - Added EPUB 3 navigation-document and EPUB 2 NCX table-of-contents parsing.
