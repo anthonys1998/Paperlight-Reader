@@ -31,7 +31,6 @@ internal fun GeminiApiKeyScreen(onClose: () -> Unit, onSaved: () -> Unit = {}) {
     var visible by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var hasKey by remember { mutableStateOf(keyStore.hasKey()) }
-
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
@@ -52,6 +51,8 @@ internal fun GeminiApiKeyScreen(onClose: () -> Unit, onSaved: () -> Unit = {}) {
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Text("Model selection is automatic. The API resolves Gemini Flash to its current version.",
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(onClick = {
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey"))) }
                     }) {

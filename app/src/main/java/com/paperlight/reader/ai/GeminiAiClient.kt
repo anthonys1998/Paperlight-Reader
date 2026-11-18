@@ -64,7 +64,7 @@ class GeminiApiKeyStore(context: Context) {
         return generator.generateKey()
     }
 
-    private companion object {
+    companion object {
         const val KEY_ALIAS = "vibe-reader-gemini-api-key"
         const val KEY_VALUE = "encrypted"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
@@ -141,8 +141,21 @@ ${samples.chapterHtml}"""
         ).trim().take(MAX_SUMMARY_CHARS).ifBlank { "Gemini returned an empty summary. Try again." }
     }
 
-    private suspend fun request(prompt: String): String = withContext(Dispatchers.IO) {
+    private suspend fun request(prompt: String): String {
         val key = keyStore.getKey() ?: throw IllegalStateException("Add your Gemini API key to use AI features.")
+        var attempt = 0
+        while (true) {
+            try {
+                return withContext(Dispatchers.IO) { requestOnce(prompt, key) }
+            } catch (failure: GeminiHttpException) {
+                if (failure.status != 503 || attempt >= 2) throw failure
+                kotlinx.coroutines.delay(800L shl attempt)
+                attempt++
+            }
+        }
+    }
+
+    private fun requestOnce(prompt: String, key: String): String {
         val connection = (URL(INTERACTIONS_ENDPOINT).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
@@ -152,12 +165,12 @@ ${samples.chapterHtml}"""
             setRequestProperty("x-goog-api-key", key)
         }
         try {
-            val body = JSONObject().put("model", MODEL).put("store", false).put("input", prompt).toString()
+            val body = JSONObject().put("model", MODEL_ALIAS).put("store", false).put("input", prompt).toString()
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
             val status = connection.responseCode
             val response = (if (status in 200..299) connection.inputStream else connection.errorStream)
                 ?.bufferedReader(Charsets.UTF_8)?.use { it.readText().take(MAX_RESPONSE_CHARS) }.orEmpty()
-            if (status !in 200..299) throw IllegalStateException(errorMessage(status, response))
+            if (status !in 200..299) throw GeminiHttpException(status, errorMessage(status, response))
             val root = JSONObject(response)
             if (root.optString("status") in setOf("failed", "incomplete", "budget_exceeded")) {
                 throw IllegalStateException("Gemini could not finish this request. Try again with a shorter input.")
@@ -194,15 +207,18 @@ ${samples.chapterHtml}"""
             400, 401, 403 -> if (detail.contains("key", true) || status == 401 || status == 403)
                 "Gemini rejected this API key. Check it in AI settings." else "Gemini could not process the request. $detail"
             429 -> "Gemini's free or paid API quota is currently limited. Check your AI Studio quota and try again later."
+            503 -> "Gemini is temporarily overloaded. The app retried this request. Try again later or choose another model in AI settings."
             else -> "Gemini request failed (HTTP $status). ${detail.take(240)}".trim()
         }
     }
 
     private companion object {
-        const val MODEL = "gemini-3.8-flash"
+        const val MODEL_ALIAS = "gemini-flash-latest"
         const val INTERACTIONS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
         const val MAX_RESPONSE_CHARS = 64 * 1024
         const val MAX_NOTES_CHARS = 24_000
         const val MAX_SUMMARY_CHARS = 10_000
     }
+
+    private class GeminiHttpException(val status: Int, message: String) : IllegalStateException(message)
 }

@@ -77,6 +77,19 @@ class LibraryViewModel(private val repository: BookRepository) : ViewModel() {
         }
     }
 
+    fun importDownloadedEpub(file: File, title: String, author: String, libraryId: String) {
+        viewModelScope.launch {
+            try {
+                repository.importGeneratedEpub(file, title, author, libraryId).fold(
+                    onSuccess = { _message.value = "Imported ${it.fileName}" },
+                    onFailure = { _message.value = it.message ?: "Could not import the downloaded EPUB." },
+                )
+            } finally {
+                file.delete()
+            }
+        }
+    }
+
     fun updateProgress(bookId: String, progress: Float) {
         viewModelScope.launch { repository.updateProgress(bookId, progress) }
     }

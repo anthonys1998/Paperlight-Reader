@@ -712,7 +712,12 @@ private fun PaperlightAppContent(
     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
     }
 
-    if (showBookDiscovery) BookDiscoveryScreen { showBookDiscovery = false }
+    if (showBookDiscovery) BookDiscoveryScreen(
+        onDismiss = { showBookDiscovery = false },
+        onImportEpub = { file, title, author ->
+            viewModel.importDownloadedEpub(file, title, author, activeLibraryId ?: "default")
+        },
+    )
     if (pagerState.settledPage == 0) pendingPdfPath?.let { path ->
         AlertDialog(
             onDismissRequest = { pendingPdfPath = null },
