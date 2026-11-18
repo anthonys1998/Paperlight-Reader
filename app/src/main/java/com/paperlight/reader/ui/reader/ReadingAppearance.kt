@@ -37,6 +37,8 @@ internal val readerPalettes = listOf(
     ReaderPalette(Color(0xFF1D201F), Color(0xFFE1DFD5), Color(0xFF292D2B), Color(0xFFB4CA9A)),
 )
 
+internal val eInkPalette = ReaderPalette(Color.White, Color.Black, Color.White, Color.Black)
+
 @Composable
 internal fun ReaderTheme(palette: ReaderPalette, dark: Boolean, content: @Composable () -> Unit) {
     val base = if (dark) darkColorScheme() else lightColorScheme()
@@ -101,6 +103,8 @@ internal fun ReadingAppearanceDialog(
     theme: Int,
     palette: ReaderPalette,
     hasFont: Boolean,
+    eInkMode: Boolean,
+    onEInkMode: (Boolean) -> Unit,
     onChange: (ReadingAppearance) -> Unit,
     onTheme: (Int) -> Unit,
     onImport: () -> Unit,
@@ -115,12 +119,28 @@ internal fun ReadingAppearanceDialog(
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("Page color", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("Light", "Dark").forEachIndexed { index, label ->
-                        FilterChip(selected = theme == index, onClick = { onTheme(index) }, label = { Text(label) })
+                if (eInkMode) {
+                    Text("E-Ink mode uses black text on a white page.", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("Light", "Dark").forEachIndexed { index, label ->
+                            FilterChip(selected = theme == index, onClick = { onTheme(index) }, label = { Text(label) })
+                        }
                     }
                 }
-                TexturePicker(value.texture, palette.paper, palette.ink) { onChange(value.copy(texture = it)) }
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("E-Ink display mode", style = MaterialTheme.typography.labelLarge)
+                        Text("Black text on white paper, no texture or page animation. Panel refresh is controlled by your device.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(checked = eInkMode, onCheckedChange = onEInkMode)
+                }
+                if (eInkMode) {
+                    Text("Paper textures and animated page turns are disabled while E-Ink mode is on.",
+                        style = MaterialTheme.typography.bodySmall)
+                } else {
+                    TexturePicker(value.texture, palette.paper, palette.ink) { onChange(value.copy(texture = it)) }
+                }
                 Text("Typeface", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf("serif" to "Serif", "sans-serif" to "Sans", "monospace" to "Mono").forEach { (font, label) ->

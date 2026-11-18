@@ -9,6 +9,19 @@
 
 # Manual test checklist — EPUB milestone
 
+## 1.0 Device file browser
+
+- Swipe left from the library and confirm Android’s system file picker opens directly.
+- Browse to supported EPUB, PDF, TXT, MOBI/AZW, CBZ or CBR files and choose each; confirm it opens in the matching reader without creating a library entry.
+- Cancel the picker and confirm the app returns to the library. Select an unsupported file and confirm a useful message appears.
+- Return from an externally opened book and choose another file; confirm temporary copies are cleaned up.
+
+## 1.0 E-Ink mode and transparent status bar
+
+- Toggle E-Ink mode from Accessibility and from EPUB and PDF/comic reader settings; confirm the mode persists after closing and reopening a book.
+- Confirm reflowable pages are black on white, texture is suppressed without losing its saved choice, and page turns have no animation. Confirm PDF/comic page images remain unchanged while UI surfaces are black and white.
+- During page turns, confirm the actual status icons remain visible over the book and there is no blank or colored strip behind them. Check both light and dark normal reader themes.
+
 ## 0.11.5 Gemini and device file browser
 
 - From the library, swipe left and choose a folder. Confirm supported EPUB, PDF, MOBI/AZW, TXT, CBZ and CBR files are listed.

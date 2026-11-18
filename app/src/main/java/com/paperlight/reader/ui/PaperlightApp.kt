@@ -2,6 +2,7 @@ package com.paperlight.reader.ui
 
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -83,32 +84,10 @@ import androidx.compose.ui.semantics.Role
 
 private data class FolderBook(val uri: Uri, val name: String)
 
-private fun queryBookFiles(context: android.content.Context, tree: Uri): List<ExternalBookFile> {
-    val columns = arrayOf(
-        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-        DocumentsContract.Document.COLUMN_MIME_TYPE,
-    )
-    val files = mutableListOf<ExternalBookFile>()
-    val pending = java.util.ArrayDeque<String>().apply { add(DocumentsContract.getTreeDocumentId(tree)) }
-    val visited = mutableSetOf<String>()
-    while (pending.isNotEmpty()) {
-        val directory = pending.removeFirst()
-        if (!visited.add(directory)) continue
-        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, directory)
-        context.contentResolver.query(children, columns, null, null, null)?.use { cursor ->
-            while (cursor.moveToNext()) {
-                val id = cursor.getString(0) ?: continue
-                val name = cursor.getString(1) ?: continue
-                if (cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) pending.add(id)
-                else if (BookRepository.formatOf(name) != null) {
-                    files += ExternalBookFile(DocumentsContract.buildDocumentUriUsingTree(tree, id), name)
-                }
-            }
-        } ?: error("Could not read a folder in this location")
+private fun queryDisplayName(context: android.content.Context, uri: Uri): String? =
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) cursor.getString(0) else null
     }
-    return files.sortedBy { it.name.lowercase(java.util.Locale.ROOT) }
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -120,6 +99,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
         mutableFloatStateOf(accessibilityPreferences.getFloat("uiTextScale", 1f).coerceIn(.85f, 1.5f))
     }
     var reduceMotion by rememberSaveable { mutableStateOf(accessibilityPreferences.getBoolean("reduceMotion", false)) }
+    var eInkMode by rememberSaveable { mutableStateOf(readerPreferences.getBoolean("eInkMode", false)) }
     var readingTextScale by rememberSaveable {
         mutableFloatStateOf(readerPreferences.getFloat("textSize", 1f).coerceIn(.7f, 2.2f))
     }
@@ -129,6 +109,7 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
             viewModel = viewModel,
             uiTextScale = uiTextScale,
             reduceMotion = reduceMotion,
+            eInkMode = eInkMode,
             readingTextScale = readingTextScale,
             onUiTextScaleChange = { value ->
                 uiTextScale = value.coerceIn(.85f, 1.5f)
@@ -137,6 +118,10 @@ fun PaperlightApp(viewModel: LibraryViewModel) {
             onReduceMotionChange = { value ->
                 reduceMotion = value
                 accessibilityPreferences.edit().putBoolean("reduceMotion", value).apply()
+            },
+            onEInkModeChange = { value ->
+                eInkMode = value
+                readerPreferences.edit().putBoolean("eInkMode", value).apply()
             },
             onReadingTextScaleChange = { value ->
                 readingTextScale = value.coerceIn(.7f, 2.2f)
@@ -152,9 +137,11 @@ private fun PaperlightAppContent(
     viewModel: LibraryViewModel,
     uiTextScale: Float,
     reduceMotion: Boolean,
+    eInkMode: Boolean,
     readingTextScale: Float,
     onUiTextScaleChange: (Float) -> Unit,
     onReduceMotionChange: (Boolean) -> Unit,
+    onEInkModeChange: (Boolean) -> Unit,
     onReadingTextScaleChange: (Float) -> Unit,
 ) {
     val books by viewModel.books.collectAsState()
@@ -172,16 +159,8 @@ private fun PaperlightAppContent(
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val pagerState = rememberPagerState(pageCount = { 2 })
     var externalBook by remember { mutableStateOf<BookEntity?>(null) }
-    var externalFolder by remember { mutableStateOf<Uri?>(null) }
-    var externalFiles by remember { mutableStateOf<List<ExternalBookFile>>(emptyList()) }
-    var externalFolderLoading by remember { mutableStateOf(false) }
+    var selectedExternalUri by remember { mutableStateOf<Uri?>(null) }
     var openingExternalFileName by remember { mutableStateOf<String?>(null) }
-    val openExternalFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) {
-            runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            externalFolder = uri
-        }
-    }
     val libraryPreferences = remember { context.getSharedPreferences("libraryAppearance", 0) }
     var listView by rememberSaveable { mutableStateOf(libraryPreferences.getBoolean("listView", false)) }
     var sortOrder by rememberSaveable { mutableStateOf(libraryPreferences.getString("sortOrder", "Recent") ?: "Recent") }
@@ -219,24 +198,17 @@ private fun PaperlightAppContent(
         uri?.let { viewModel.backup(it, restore = false) }
     }
     val restoreBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> pendingRestore = uri }
+    val openBookPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) scope.launch { pagerState.animateScrollToPage(0) }
+        else selectedExternalUri = uri
+    }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { viewModel.import(it, activeLibraryId ?: "default") }
     }
     val scan = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { folder = it }
 
-    LaunchedEffect(externalFolder) {
-        val tree = externalFolder ?: return@LaunchedEffect
-        externalFolderLoading = true
-        try {
-            externalFiles = withContext(Dispatchers.IO) { queryBookFiles(context, tree) }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            externalFiles = emptyList()
-            snackbar.showSnackbar("Could not browse this folder")
-        } finally {
-            externalFolderLoading = false
-        }
+    LaunchedEffect(pagerState.currentPage) {
+        if (pagerState.currentPage == 1 && externalBook == null) openBookPicker.launch(arrayOf("*/*"))
     }
 
     fun openExternalBook(file: ExternalBookFile) {
@@ -270,6 +242,7 @@ private fun PaperlightAppContent(
                 throw cancelled
             } catch (failure: Exception) {
                 snackbar.showSnackbar(failure.message ?: "Could not open this book.")
+                pagerState.animateScrollToPage(0)
             } finally {
                 openingExternalFileName = null
             }
@@ -283,6 +256,27 @@ private fun PaperlightAppContent(
         }
         externalBook = null
         selectedId = null
+        scope.launch { pagerState.animateScrollToPage(0) }
+    }
+
+    LaunchedEffect(selectedExternalUri) {
+        val uri = selectedExternalUri ?: return@LaunchedEffect
+        try {
+            val name = withContext(Dispatchers.IO) { queryDisplayName(context, uri) }
+            if (name.isNullOrBlank() || BookRepository.formatOf(name) == null) {
+                snackbar.showSnackbar("That file type is not supported. Choose an EPUB, PDF, TXT, MOBI/AZW, CBZ or CBR book.")
+                pagerState.animateScrollToPage(0)
+            } else {
+                openExternalBook(ExternalBookFile(uri, name))
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            snackbar.showSnackbar("Could not read the selected file.")
+            pagerState.animateScrollToPage(0)
+        } finally {
+            selectedExternalUri = null
+        }
     }
 
     LaunchedEffect(message) {
@@ -335,6 +329,11 @@ private fun PaperlightAppContent(
     }
 
     val opened = externalBook ?: books.find { it.id == selectedId }
+    LaunchedEffect(selectedId, externalBook) {
+        if (selectedId == null && externalBook == null) {
+            eInkMode = context.getSharedPreferences("reader", 0).getBoolean("eInkMode", false)
+        }
+    }
     if (opened != null && externalBook == null) TrackReadingTime(opened.id)
     if (opened != null && opened.format in setOf("PDF", "CBZ", "CBR")) {
         BackHandler { leaveOpenedBook() }
@@ -394,15 +393,7 @@ private fun PaperlightAppContent(
     BackHandler(pagerState.currentPage == 1) { scope.launch { pagerState.animateScrollToPage(0) } }
     HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { screen ->
       if (screen == 1) {
-        FileManagerScreen(
-            folderName = externalFolder?.let { DocumentsContract.getTreeDocumentId(it).substringAfterLast(':').substringAfterLast('/') },
-            files = externalFiles,
-            loading = externalFolderLoading,
-            openingFileName = openingExternalFileName,
-            onBack = { scope.launch { pagerState.animateScrollToPage(0) } },
-            onChooseFolder = { openExternalFolder.launch(null) },
-            onOpen = ::openExternalBook,
-        )
+        FileManagerScreen()
       } else {
        ModalNavigationDrawer(
         drawerState = drawer,
@@ -686,7 +677,14 @@ private fun PaperlightAppContent(
                         }
                         Switch(checked = reduceMotion, onCheckedChange = onReduceMotionChange)
                     }
-                    TextButton(onClick = { onUiTextScaleChange(1f); onReadingTextScaleChange(1f); onReduceMotionChange(false) }) { Text("Reset accessibility settings") }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("E-Ink display mode", style = MaterialTheme.typography.titleSmall)
+                            Text("Use black and white reading pages and turn off page animations and textures.", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(checked = eInkMode, onCheckedChange = onEInkModeChange)
+                    }
+                    TextButton(onClick = { onUiTextScaleChange(1f); onReadingTextScaleChange(1f); onReduceMotionChange(false); onEInkModeChange(false) }) { Text("Reset accessibility settings") }
                 }
             },
             confirmButton = { TextButton(onClick = { showAccessibility = false }) { Text("Done") } }

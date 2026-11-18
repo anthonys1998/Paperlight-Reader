@@ -87,7 +87,9 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     val pdfSource = remember(book.id) { if (book.format == "PDF") PdfPageSource(book.localPath) else null }
     DisposableEffect(pdfSource) { onDispose { pdfSource?.close() } }
     val preferences = remember(context) { context.getSharedPreferences("reader", 0) }
-    val reduceMotion = remember(context) { context.getSharedPreferences("accessibility", 0).getBoolean("reduceMotion", false) }
+    val baseReduceMotion = remember(context) { context.getSharedPreferences("accessibility", 0).getBoolean("reduceMotion", false) }
+    var eInkMode by remember { mutableStateOf(preferences.getBoolean("eInkMode", false)) }
+    val reduceMotion = baseReduceMotion || eInkMode
     var position by rememberSaveable(book.id) { mutableFloatStateOf(book.progress) }
     var page by remember(book.id) { mutableStateOf<RenderedPage?>(null) }
     var error by remember(book.id) { mutableStateOf<String?>(null) }
@@ -99,8 +101,9 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     var dragOffset by remember { mutableFloatStateOf(0f) }
     var swipeCommitted by remember { mutableStateOf(false) }
     var turnStartFraction by remember { mutableFloatStateOf(0f) }
-    ReaderImmersiveMode(dark)
-    val palette = imageReaderPalette(dark)
+    ReaderImmersiveMode(dark && !eInkMode)
+    val palette = if (eInkMode) ImageReaderPalette(Color.White, Color.Black, Color.White, Color.Black)
+        else imageReaderPalette(dark)
     var barsVisible by rememberSaveable { mutableStateOf(false) }
     var singleTap by remember { mutableStateOf(preferences.getBoolean("singleTapBars", false)) }
     var fitWidth by remember { mutableStateOf(preferences.getBoolean("imageFitWidth", false)) }
@@ -184,9 +187,9 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
             latestProgress(position)
         }
     }
-    ReaderTheme(ReaderPalette(palette.paper, palette.ink, palette.panel, palette.accent), dark) {
+    ReaderTheme(ReaderPalette(palette.paper, palette.ink, palette.panel, palette.accent), dark && !eInkMode) {
     Box(Modifier.fillMaxSize().background(palette.paper)) {
-        Box(Modifier.fillMaxSize().statusBarsPadding().padding(bottom = 24.dp).clipToBounds()
+        Box(Modifier.fillMaxSize().padding(bottom = 24.dp).clipToBounds()
             .pointerInput(singleTap) {
                 detectTapGestures(onTap = { if (singleTap) barsVisible = !barsVisible },
                     onDoubleTap = { if (!singleTap) barsVisible = !barsVisible })
@@ -225,18 +228,18 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                         } else {
                             accumulated += delta
                             if (abs(accumulated.x) > viewConfiguration.touchSlop && abs(accumulated.x) > abs(accumulated.y) * 1.4f) swiping = true
-                            if (swiping) {
+                            if (swiping && !reduceMotion) {
                                 dragOffset = accumulated.x.coerceIn(-size.width * .9f, size.width * .9f)
                                 event.changes.filter { it.positionChanged() }.forEach { it.consume() }
                             }
                         }
                     } while (pressed)
-                    if (swiping && currentReady && abs(dragOffset) > size.width * .20f) {
+                    if (swiping && currentReady && abs(accumulated.x) > size.width * .20f) {
                         val current = page
-                        val direction = if (dragOffset < 0) 1 else -1
+                        val direction = if (accumulated.x < 0) 1 else -1
                         if (current != null && current.index + direction in 0 until current.count) {
                             swipeCommitted = true
-                            turnStartFraction = abs(dragOffset) / size.width
+                            turnStartFraction = if (reduceMotion) 1f else abs(dragOffset) / size.width
                             goTo(current.index + direction)
                         } else dragOffset = 0f
                     } else {
@@ -289,7 +292,7 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                     }
                 }
             }
-            if (texture != "none") {
+            if (texture != "none" && !eInkMode) {
                 Canvas(Modifier.matchParentSize()) {
                     val step = if (texture == "grid") 20.dp.toPx() else if (texture == "linen") 4.dp.toPx() else 7.dp.toPx()
                     val alpha = if (texture == "linen") .035f else .022f
@@ -411,7 +414,17 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                     FilterChip(selected = !continuous, onClick = { continuous = false; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageContinuous", false).apply() }, label = { Text("Pages") })
                     FilterChip(selected = continuous, onClick = { continuous = true; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageContinuous", true).apply() }, label = { Text("Scroll") })
                 }
-                TexturePicker(texture, palette.paper, palette.ink) { texture = it; preferences.edit().putString("texture", it).apply() }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("E-Ink display mode", style = MaterialTheme.typography.labelLarge)
+                        Text("High-contrast pages with no texture or transition animation. Panel refresh is controlled by your device.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(checked = eInkMode, onCheckedChange = { enabled ->
+                        eInkMode = enabled
+                        preferences.edit().putBoolean("eInkMode", enabled).apply()
+                    })
+                }
+                if (!eInkMode) TexturePicker(texture, palette.paper, palette.ink) { texture = it; preferences.edit().putString("texture", it).apply() }
                 OutlinedTextField(value = pageInput, onValueChange = { pageInput = it.filter(Char::isDigit).take(6) },
                     label = { Text("Go to page") }, singleLine = true)
                 TextButton(enabled = pageInput.toIntOrNull()?.let { it in 1..(page?.count ?: 0) } == true,

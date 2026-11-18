@@ -1,3 +1,9 @@
+## 1.0
+- Swiping left from the library opens Android’s system file picker directly. Browse storage and select a supported book to open without adding it to a library.
+- Picked books are read from temporary copies that are removed after leaving the reader.
+- Add E-Ink display mode: high-contrast black on white, paper textures off, page animations off, and gray annotation marks. Available from Accessibility and reader settings.
+- Draw reading content behind the transparent status bar so page turns do not reveal a blank top strip.
+
 ## 0.11.5-dev
 - Add optional Gemini API features for website scraper selectors and summaries of written reader notes, with encrypted user-key storage and first-use key setup.
 - Add a swipe-left device file browser. It opens supported books from a temporary cache copy without importing or adding them to a library.

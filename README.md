@@ -2,7 +2,15 @@
 
 Vibe Reader is an offline-first Android ebook reader project. Imported files are copied into the app's private storage; no account or cloud sync is used.
 
-## Current milestone: 0.11.5-dev
+## Current milestone: 1.0
+
+### Changes in 1.0
+
+- Swipe left from the library to open Android’s system file picker directly. Browse device storage and choose a supported book to open it in Vibe Reader without importing it.
+- Selected books are copied to a temporary file for reading and removed when you leave the reader; no folder grant or library entry is needed.
+- Add E-Ink display mode for reflowable books and PDF/comics: high-contrast black-on-white reader surfaces, no paper texture, and no page-turn animation. The option is available in Accessibility and reader settings.
+- Extend EPUB and image-reader content beneath the transparent status bar so its background follows the page during turns.
+- Set the Android app version to 1.0.
 
 ### Changes in 0.11.5
 

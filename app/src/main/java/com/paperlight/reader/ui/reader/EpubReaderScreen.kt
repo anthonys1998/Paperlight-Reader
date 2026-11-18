@@ -96,7 +96,9 @@ fun EpubReaderScreen(
     val mainView = LocalView.current
     val latestProgress by rememberUpdatedState(onProgress)
     val preferences = remember { context.getSharedPreferences("reader", 0) }
-    val reduceMotion = remember { context.getSharedPreferences("accessibility", 0).getBoolean("reduceMotion", false) }
+    val baseReduceMotion = remember { context.getSharedPreferences("accessibility", 0).getBoolean("reduceMotion", false) }
+    var eInkMode by remember { mutableStateOf(preferences.getBoolean("eInkMode", false)) }
+    val reduceMotion = baseReduceMotion || eInkMode
     val bookmarkStore = remember(context) { BookmarkStore(context) }
     val annotationStore = remember(context) { ReaderAnnotationStore(context) }
     var annotations by remember(book.id) { mutableStateOf(annotationStore.read(book.id)) }
@@ -227,14 +229,14 @@ fun EpubReaderScreen(
         publication.chapters.mapIndexed { index, entry -> titles[index] ?: entry.title }
     }
     val chapter = publication.chapters[chapterIndex]
-    ReaderImmersiveMode(dark = themeMode == 1)
-    val palette = readerPalettes[themeMode]
+    ReaderImmersiveMode(dark = themeMode == 1 && !eInkMode)
+    val palette = if (eInkMode) eInkPalette else readerPalettes[themeMode]
     val background = palette.paper
     SideEffect {
         val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
             .filterIsInstance<Activity>().firstOrNull()
         activity?.window?.let { window ->
-            WindowCompat.getInsetsController(window, mainView).isAppearanceLightStatusBars = themeMode == 0
+            WindowCompat.getInsetsController(window, mainView).isAppearanceLightStatusBars = themeMode == 0 || eInkMode
         }
     }
     val foreground = palette.ink
@@ -360,9 +362,9 @@ fun EpubReaderScreen(
         selection = null
     }
 
-    ReaderTheme(palette, dark = themeMode == 1) {
+    ReaderTheme(palette, dark = themeMode == 1 && !eInkMode) {
         Box(Modifier.fillMaxSize().background(background)) {
-            Box(Modifier.matchParentSize().statusBarsPadding().padding(bottom = 23.dp)
+            Box(Modifier.matchParentSize().padding(bottom = 23.dp)
                 .onSizeChanged { viewport = it }) {
                 AndroidView(
                     modifier = Modifier.matchParentSize(),
@@ -499,7 +501,7 @@ fun EpubReaderScreen(
                                     val loadingChapter = chapterIndex
                                     view.evaluateJavascript("window.paperlightInitialAppearance = ${appearance.json()};" + buildReaderScript(
                                         themeMode, appearance.size, fraction, scrollMode, loadingChapter,
-                                        view.width, view.height, flip, reduceMotion,
+                                        view.width, view.height, flip && !eInkMode, reduceMotion, eInkMode,
                                         lastChapterIndex = publication.chapters.lastIndex,
                                     )) {
                                         if (chapterIndex == loadingChapter) {
@@ -540,7 +542,7 @@ fun EpubReaderScreen(
                     }
                 )
                 chapterSnapshot?.let { bitmap ->
-                    if (flip) ChapterTurnSheet(bitmap, snapshotProgress.value, chapterTurnDirection,
+                    if (flip && !eInkMode) ChapterTurnSheet(bitmap, snapshotProgress.value, chapterTurnDirection,
                         palette.paper, Modifier.matchParentSize())
                     else androidx.compose.foundation.Image(bitmap.asImageBitmap(), null,
                         Modifier.matchParentSize().graphicsLayer {
@@ -757,6 +759,12 @@ fun EpubReaderScreen(
         if (showAppearance) {
             ReadingAppearanceDialog(
                 value = appearance, theme = themeMode, palette = palette, hasFont = customFont != null,
+                eInkMode = eInkMode,
+                onEInkMode = { enabled ->
+                    eInkMode = enabled
+                    preferences.edit().putBoolean("eInkMode", enabled).apply()
+                    webView?.evaluateJavascript("window.paperlightSetEInk?.($enabled)", null)
+                },
                 onChange = { appearance = it }, onTheme = { themeMode = it },
                 onImport = { fontPicker.launch(arrayOf("*/*")) },
                 onDismiss = { showAppearance = false },
@@ -794,13 +802,17 @@ fun EpubReaderScreen(
                         }
                         if (!scrollMode) {
                             Text("Page transition", style = MaterialTheme.typography.labelLarge)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf(true to "Page flip", false to "Slide").forEach { (useFlip, label) ->
-                                    FilterChip(selected = flip == useFlip, onClick = {
-                                        flip = useFlip
-                                        preferences.edit().putBoolean("pageFlip", flip).apply()
-                                        webView?.evaluateJavascript("window.paperlightSetFlip?.($flip)", null)
-                                    }, label = { Text(label) })
+                            if (eInkMode) {
+                                Text("Page animations are off in E-Ink mode.", style = MaterialTheme.typography.bodySmall)
+                            } else {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    listOf(true to "Page flip", false to "Slide").forEach { (useFlip, label) ->
+                                        FilterChip(selected = flip == useFlip, onClick = {
+                                            flip = useFlip
+                                            preferences.edit().putBoolean("pageFlip", flip).apply()
+                                            webView?.evaluateJavascript("window.paperlightSetFlip?.($flip)", null)
+                                        }, label = { Text(label) })
+                                    }
                                 }
                             }
                         }
@@ -1043,31 +1055,44 @@ private fun viewNext(view: WebView?, direction: Int) {
     view?.evaluateJavascript("window.paperlightMove($direction)", null)
 }
 
-private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean, reduceMotion: Boolean, lastChapterIndex: Int): String = """
+private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction: Float, scrollMode: Boolean, chapterIndex: Int, widthPx: Int, heightPx: Int, flip: Boolean, reduceMotion: Boolean, eInkMode: Boolean, lastChapterIndex: Int): String = """
 (function(){
- const palettes={white:{bg:'#F9F9F5',fg:'#2C302E',link:'#395F55'},dark:{bg:'#1D201F',fg:'#E1DFD5',link:'#B4CA9A'}};
- let mode=${when (themeMode) { 1 -> "'dark'"; else -> "'white'" }};
+ const palettes={white:{bg:'#F9F9F5',fg:'#2C302E',link:'#395F55'},dark:{bg:'#1D201F',fg:'#E1DFD5',link:'#B4CA9A'},eink:{bg:'#FFFFFF',fg:'#000000',link:'#000000'}};
+ let preferredMode=${when (themeMode) { 1 -> "'dark'"; else -> "'white'" }};
+ let eink=$eInkMode;
+ let mode=eink?'eink':preferredMode;
  if(document.getElementById('paperlight-style')) return null;
  const style=document.createElement('style'); style.id='paperlight-style';
  style.textContent=`html{margin:0!important;padding:0!important;overflow:hidden!important;background:${'$'}{palettes[mode].bg}!important;}
  body{box-sizing:border-box!important;margin:24px!important;padding:0!important;overflow:visible!important;color:${'$'}{palettes[mode].fg}!important;background:transparent!important;font-size:${fontScale}em!important;line-height:1.65!important;font-family:serif!important;}
- ::highlight(paperlight-note){background:#ffd664;color:#28231a;}
- ::highlight(paperlight-search){background:#8de7f2;color:#28231a;}
- ::highlight(paperlight-green){background:#ace4ae;color:#28231a;}
- ::highlight(paperlight-blue){background:#9bd9fa;color:#28231a;}
- ::highlight(paperlight-pink){background:#ffb9d0;color:#28231a;}
+ ::highlight(paperlight-note){background:var(--note-highlight,#ffd664);color:#000;}
+ ::highlight(paperlight-search){background:var(--search-highlight,#8de7f2);color:#000;}
+ ::highlight(paperlight-green){background:var(--green-highlight,#ace4ae);color:#000;}
+ ::highlight(paperlight-blue){background:var(--blue-highlight,#9bd9fa);color:#000;}
+ ::highlight(paperlight-pink){background:var(--pink-highlight,#ffb9d0);color:#000;}
  mark[data-paperlight-note]{color:#28231a!important;}
  .paperlight-note-marker{position:fixed;z-index:5;pointer-events:none;box-sizing:border-box;border-bottom:2px dotted #52633d;}
  p,li{orphans:2;widows:2;} img,svg,video{max-width:100%!important;object-fit:contain!important;break-inside:avoid!important;} h1,h2,h3,h4{break-after:avoid!important;} a{color:${'$'}{palettes[mode].link}!important;}`;
  document.head.appendChild(style);
  const darkText=document.createElement('style');
  document.head.appendChild(darkText);
+ function applyPalette(){
+   const root=document.documentElement;
+   root.style.setProperty('--note-highlight',eink?'#D6D6D6':'#ffd664');
+   root.style.setProperty('--search-highlight',eink?'#BFBFBF':'#8de7f2');
+   root.style.setProperty('--green-highlight',eink?'#E5E5E5':'#ace4ae');
+   root.style.setProperty('--blue-highlight',eink?'#C9C9C9':'#9bd9fa');
+   root.style.setProperty('--pink-highlight',eink?'#DCDCDC':'#ffb9d0');
+ }
  function applyDarkText(){
-   darkText.textContent=mode==='dark'
+   darkText.textContent=mode==='eink'
+     ? ".paperlight-content :is(p,li,blockquote,h1,h2,h3,h4,h5,h6,dt,dd,td,th,figcaption,span,em,strong,a){color:#000!important;background-color:transparent!important;}"
+     : mode==='dark'
      ? ".paperlight-content :is(p,li,blockquote,h1,h2,h3,h4,h5,h6,dt,dd,td,th,figcaption){color:inherit!important;background-color:transparent!important;} .paperlight-content :is(span,em,strong):not(a *){color:inherit!important;}"
      : "";
  }
  applyDarkText();
+ applyPalette();
  let scrolling=$scrollMode;
  let type=window.paperlightInitialAppearance||{size:$fontScale,lineHeight:1.65,margins:24,font:'serif',alignment:'original',texture:'none'};
  delete window.paperlightInitialAppearance;
@@ -1150,7 +1175,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    const contentWidth=Math.max(1,width-2*margin);
    const contentHeight=Math.max(1,height-2*margin);
    const family=type.font==='custom'?(customFontReady?'PaperlightCustom, serif':'serif'):type.font;
-   const texture=type.texture==='grid'
+   const texture=eink?'none':type.texture==='grid'
      ? 'repeating-linear-gradient(0deg,transparent 0 19px,rgba(128,128,128,.11) 19px 20px),repeating-linear-gradient(90deg,transparent 0 19px,rgba(128,128,128,.11) 19px 20px)'
      : type.texture==='linen'
      ? 'repeating-linear-gradient(0deg,transparent 0 3px,rgba(128,128,128,.065) 3px 4px),repeating-linear-gradient(90deg,transparent 0 3px,rgba(128,128,128,.065) 3px 4px)'
@@ -1243,8 +1268,9 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    reflow(()=>{scrolling=next;});
  };
  configureMode();
- let flip=$flip;
- window.paperlightSetFlip=function(enabled){flip=enabled;};
+ let preferredFlip=$flip;
+ let flip=preferredFlip&&!eink;
+ window.paperlightSetFlip=function(enabled){preferredFlip=enabled;flip=preferredFlip&&!eink;};
  const reducedMotion=()=>$reduceMotion||window.matchMedia('(prefers-reduced-motion: reduce)').matches;
  // Keep a real adjacent page beneath the turning sheet. Both directions use
  // the SAME right-to-left fold, with time reversed for a backward turn.
@@ -1742,6 +1768,10 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      resetDrag();
      return;
    }
+   if(reducedMotion()){
+     resetDrag();
+     return;
+   }
    if(event.cancelable) event.preventDefault();
    if(page()+direction<0||page()+direction>=total()) return;
    const style=flip?'curl':'slide';
@@ -1787,7 +1817,8 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
      Paperlight.onReaderTap($chapterIndex,1);
    }
  },{passive:true});
- window.paperlightTheme=function(next){mode=palettes[next]?next:'white';resetDrag();viewport.style.backgroundColor=palettes[mode].bg;document.documentElement.style.setProperty('background',palettes[mode].bg,'important');document.body.style.setProperty('color',palettes[mode].fg,'important');style.textContent=style.textContent.replace(/a\{color:[^}]+\}/,`a{color:${'$'}{palettes[mode].link}!important;}`);applyDarkText();};
+ window.paperlightTheme=function(next){preferredMode=palettes[next]&&next!=='eink'?next:'white';mode=eink?'eink':preferredMode;resetDrag();viewport.style.backgroundColor=palettes[mode].bg;document.documentElement.style.setProperty('background',palettes[mode].bg,'important');document.body.style.setProperty('color',palettes[mode].fg,'important');style.textContent=style.textContent.replace(/a\{color:[^}]+\}/,`a{color:${'$'}{palettes[mode].link}!important;}`);applyDarkText();applyPalette();};
+ window.paperlightSetEInk=function(enabled){eink=enabled;mode=eink?'eink':preferredMode;flip=preferredFlip&&!eink;resetDrag();viewport.style.backgroundColor=palettes[mode].bg;document.documentElement.style.setProperty('background',palettes[mode].bg,'important');document.body.style.setProperty('color',palettes[mode].fg,'important');style.textContent=style.textContent.replace(/a\{color:[^}]+\}/,`a{color:${'$'}{palettes[mode].link}!important;}`);applyDarkText();applyPalette();reflow(()=>{});};
  function readingAnchor(){
    if(!document.caretRangeFromPoint) return null;
    const margin=Math.min(type.margins,Math.floor(Math.min(layoutWidth,layoutHeight)/4));
