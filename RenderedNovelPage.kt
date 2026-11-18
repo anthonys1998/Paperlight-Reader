@@ -1,0 +1,99 @@
+package com.paperlight.reader.webnovel
+
+import android.content.Context
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import kotlin.coroutines.resume
+
+internal class RenderedNovelPage(private val context: Context) {
+    suspend fun load(url: String, ready: (Document) -> Boolean): Document =
+        withContext(Dispatchers.Main) {
+            val browser = WebView(context.applicationContext)
+            try {
+                var failure: String? = null
+                var finished = false
+                browser.settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    allowFileAccess = false
+                    allowContentAccess = false
+                    javaScriptCanOpenWindowsAutomatically = false
+                    blockNetworkImage = true
+                    mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                }
+                browser.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                        request.url.scheme?.lowercase() !in setOf("http", "https")
+
+                    override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                        finished = false
+                    }
+
+                    override fun onPageFinished(view: WebView, url: String) {
+                        finished = true
+                    }
+
+                    override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                        if (request.isForMainFrame) failure = "The website returned HTTP ${response.statusCode}."
+                    }
+
+                    override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                        if (request.isForMainFrame) failure = error.description.toString()
+                    }
+                }
+                browser.loadUrl(url)
+                var lastTitle = ""
+                suspend fun awaitContent(): Document {
+                    while (true) {
+                        failure?.let { error("Could not load $url. $it") }
+                        if (finished) {
+                            val snapshot = browser.snapshot()
+                            if (snapshot != null) {
+                                val rendered = withContext(Dispatchers.Default) {
+                                    val document = Jsoup.parse(snapshot.getString("html"), snapshot.getString("url"))
+                                    document to ready(document)
+                                }
+                                lastTitle = rendered.first.title().take(120)
+                                if (rendered.second) return rendered.first
+                            }
+                        }
+                        delay(350)
+                    }
+                }
+                withTimeoutOrNull(25_000) { awaitContent() }
+                    ?: error("No matching content appeared in the browser for $url." +
+                        if (lastTitle.isBlank()) "" else " Page title: $lastTitle.")
+            } finally {
+                browser.stopLoading()
+                browser.destroy()
+            }
+        }
+
+    private suspend fun WebView.snapshot(): JSONObject? =
+        suspendCancellableCoroutine { continuation ->
+            evaluateJavascript(
+                """
+                (() => {
+                    const html = document.documentElement?.outerHTML;
+                    if (!html || html.length > 8000000) return null;
+                    return {url: location.href, html};
+                })()
+                """.trimIndent()
+            ) { result ->
+                if (continuation.isActive) {
+                    continuation.resume(result?.let { runCatching { JSONObject(it) }.getOrNull() })
+                }
+            }
+        }
+}
