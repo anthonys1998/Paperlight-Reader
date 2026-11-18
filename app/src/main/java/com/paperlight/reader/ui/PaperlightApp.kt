@@ -81,6 +81,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.Role
@@ -353,37 +354,47 @@ private fun PaperlightAppContent(
     }
     val activeLibrary = libraries.find { it.id == activeLibraryId }
     val title = activeLibrary?.name ?: "All books"
-    val menuSwipeThreshold = with(LocalDensity.current) { 64.dp.toPx() }
-    val menuSwipeSlop = with(LocalDensity.current) { 8.dp.toPx() }
     BackHandler(selectedBooks.isNotEmpty()) { selectedBooks = emptySet() }
     BackHandler(pagerState.currentPage == 1) { scope.launch { pagerState.animateScrollToPage(0) } }
     HorizontalPager(
         state = pagerState,
         userScrollEnabled = !drawer.isOpen,
         beyondViewportPageCount = 1,
-        modifier = Modifier.fillMaxSize().pointerInput(drawer.isOpen, pagerState.currentPage) {
+        modifier = Modifier.fillMaxSize().pointerInput(drawer.isOpen, pagerState) {
+            val touchSlop = viewConfiguration.touchSlop
+            val menuSwipeDistance = 96.dp.toPx()
+            val horizontalRatio = 1.5f
             awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                val startX = down.position.x
-                var rightSwipeStarted = false
-                var menuOpened = false
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    if (!change.pressed) break
+                // Observe after the pager and scrollable content have handled the event.
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
+                if (drawer.isOpen || pagerState.currentPage != 0 ||
+                    pagerState.canScrollBackward || pagerState.isScrollInProgress
+                ) return@awaitEachGesture
 
-                    val distanceX = change.position.x - startX
-                    if (pagerState.currentPage == 0 && !drawer.isOpen && distanceX > menuSwipeSlop) {
-                        rightSwipeStarted = true
+                var directionDecided = false
+                var maxVerticalDistance = 0f
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Final)
+                    if (event.changes.any { it.id != down.id && it.pressed }) break
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    val distanceX = change.position.x - down.position.x
+                    val distanceY = abs(change.position.y - down.position.y)
+                    maxVerticalDistance = maxOf(maxVerticalDistance, distanceY)
+
+                    if (!directionDecided && maxOf(abs(distanceX), distanceY) >= touchSlop) {
+                        if (distanceX < touchSlop || distanceX <= distanceY * horizontalRatio) break
+                        directionDecided = true
                     }
-                    if (rightSwipeStarted) {
-                        // Consume rightward movement before HorizontalPager sees it.
-                        // Leftward movement is untouched and remains pager navigation.
-                        change.consume()
-                        if (!menuOpened && distanceX >= menuSwipeThreshold) {
-                            menuOpened = true
+
+                    if (!change.pressed) {
+                        if (directionDecided && distanceX >= menuSwipeDistance &&
+                            distanceX > maxVerticalDistance * horizontalRatio &&
+                            !drawer.isOpen && pagerState.currentPage == 0 &&
+                            !pagerState.canScrollBackward && pagerState.targetPage == 0
+                        ) {
                             scope.launch { drawer.open() }
                         }
+                        break
                     }
                 }
             }
