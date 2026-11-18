@@ -329,11 +329,7 @@ private fun PaperlightAppContent(
     }
 
     val opened = externalBook ?: books.find { it.id == selectedId }
-    LaunchedEffect(selectedId, externalBook) {
-        if (selectedId == null && externalBook == null) {
-            eInkMode = context.getSharedPreferences("reader", 0).getBoolean("eInkMode", false)
-        }
-    }
+    
     if (opened != null && externalBook == null) TrackReadingTime(opened.id)
     if (opened != null && opened.format in setOf("PDF", "CBZ", "CBR")) {
         BackHandler { leaveOpenedBook() }
