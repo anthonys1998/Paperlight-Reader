@@ -120,7 +120,8 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
             ensureDefaultLibrary()
             require(dao.findLibrary(libraryId) != null) { "This library no longer exists." }
             val resolver = context.contentResolver
-            val displayName = resolver.query(uri, null, null, null, null)?.use { cursor ->
+            val localFile = if (uri.scheme == "file") File(requireNotNull(uri.path)) else null
+            val displayName = localFile?.name ?: resolver.query(uri, null, null, null, null)?.use { cursor ->
                 val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                 if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
             } ?: "Imported book"
@@ -130,7 +131,7 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
             val booksDir = File(context.filesDir, "books").apply { mkdirs() }
             val destination = File(booksDir, "$id.$extension")
             try {
-                resolver.openInputStream(uri)?.use { input ->
+                (localFile?.inputStream() ?: resolver.openInputStream(uri))?.use { input ->
                     destination.outputStream().use { output -> input.copyTo(output) }
                 } ?: error("Unable to read selected file")
                 val metadata = if (format == "EPUB") BookArtwork.metadata(destination) else null

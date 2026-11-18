@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Description
@@ -26,6 +27,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -41,13 +43,22 @@ internal data class ExternalBookFile(val uri: Uri, val name: String) {
     val format: String get() = BookRepository.formatOf(name).orEmpty()
 }
 
+internal enum class FileManagerMode { Browse, Import, Scan }
+
 /** A file explorer that stays inside the second page of the library pager. */
 @Composable
-internal fun FileManagerScreen(onOpenFile: (ExternalBookFile) -> Unit) {
+internal fun FileManagerScreen(
+    mode: FileManagerMode,
+    onClose: () -> Unit,
+    onOpenFile: (ExternalBookFile) -> Unit,
+    onImportFiles: (List<Uri>) -> Unit,
+    onScanFolder: (File) -> Unit,
+) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val primary = remember { Environment.getExternalStorageDirectory() }
     var path by rememberSaveable { mutableStateOf(primary.absolutePath) }
+    var selectedPaths by rememberSaveable(mode) { mutableStateOf(arrayListOf<String>()) }
     var accessVersion by remember { mutableIntStateOf(0) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { accessVersion++ }
     val settingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { accessVersion++ }
@@ -68,16 +79,33 @@ internal fun FileManagerScreen(onOpenFile: (ExternalBookFile) -> Unit) {
         }
     }
     val folder = remember(path) { File(path) }
-    val entries by produceState<List<File>>(initialValue = emptyList(), path, hasAccess, accessVersion) {
-        value = if (!hasAccess) emptyList() else withContext(Dispatchers.IO) {
-            folder.listFiles()?.filter { it.isDirectory || (it.isFile && BookRepository.formatOf(it.name) != null) }
-                ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }) ?: emptyList()
+    val listing by key(folder, hasAccess, accessVersion, mode) {
+        produceState<Result<List<File>>?>(initialValue = null) {
+            if (hasAccess) value = withContext(Dispatchers.IO) {
+                runCatching {
+                    checkNotNull(folder.listFiles()).filter {
+                        it.isDirectory || (mode != FileManagerMode.Scan && it.isFile && BookRepository.formatOf(it.name) != null)
+                    }.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
+                }
+            }
         }
     }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
+        .statusBarsPadding().navigationBarsPadding()) {
         Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-            Text("Device files", Modifier.fillMaxWidth().padding(start = 20.dp, top = 20.dp, bottom = 16.dp),
-                style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when (mode) {
+                        FileManagerMode.Browse -> "Device files"
+                        FileManagerMode.Import -> "Import books"
+                        FileManagerMode.Scan -> "Scan folder"
+                    },
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                if (mode != FileManagerMode.Browse) TextButton(onClick = onClose) { Text("Cancel") }
+            }
         }
         if (!hasAccess) {
             Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center,
@@ -106,10 +134,21 @@ internal fun FileManagerScreen(onOpenFile: (ExternalBookFile) -> Unit) {
                 }
             }
             HorizontalDivider()
-            if (entries.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No folders or supported books here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else LazyColumn(Modifier.fillMaxSize()) {
-                items(entries, key = { it.absolutePath }) { entry ->
+            val currentEntries = listing?.getOrNull()
+            if (currentEntries.isNullOrEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                if (listing == null) CircularProgressIndicator()
+                else Text(
+                    when {
+                        currentEntries == null -> "Folder contents unavailable."
+                        mode == FileManagerMode.Scan -> "No subfolders here."
+                        else -> "No folders or supported books here."
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                items(currentEntries, key = { it.absolutePath }) { entry ->
+                    val importingBook = mode == FileManagerMode.Import && !entry.isDirectory
+                    val selected = entry.absolutePath in selectedPaths
                     ListItem(
                         leadingContent = {
                             val format = BookRepository.formatOf(entry.name)
@@ -130,13 +169,36 @@ internal fun FileManagerScreen(onOpenFile: (ExternalBookFile) -> Unit) {
                         },
                         headlineContent = { Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         supportingContent = { Text(if (entry.isDirectory) "Folder" else "${BookRepository.formatOf(entry.name)} file") },
+                        trailingContent = if (importingBook) {
+                            { Checkbox(checked = selected, onCheckedChange = null) }
+                        } else null,
                         colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
-                        modifier = Modifier.clickable {
+                        modifier = if (importingBook) {
+                            Modifier.toggleable(value = selected, role = Role.Checkbox) { checked ->
+                                val entryPath = entry.absolutePath
+                                selectedPaths = ArrayList(if (checked) selectedPaths + entryPath else selectedPaths - entryPath)
+                            }
+                        } else Modifier.clickable {
                             if (entry.isDirectory) path = entry.absolutePath
                             else onOpenFile(ExternalBookFile(Uri.fromFile(entry), entry.name))
                         }
                     )
                     HorizontalDivider()
+                }
+            }
+            if (mode != FileManagerMode.Browse) {
+                HorizontalDivider()
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.End) {
+                    if (mode == FileManagerMode.Import) {
+                        Button(enabled = selectedPaths.isNotEmpty(), onClick = {
+                            onImportFiles(selectedPaths.map { Uri.fromFile(File(it)) })
+                        }) { Text("Import selected (${selectedPaths.size})") }
+                    } else {
+                        Button(enabled = currentEntries != null, onClick = { onScanFolder(folder) }) {
+                            Text("Scan this folder")
+                        }
+                    }
                 }
             }
         }

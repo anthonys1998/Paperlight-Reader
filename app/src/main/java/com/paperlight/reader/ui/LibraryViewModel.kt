@@ -50,13 +50,28 @@ class LibraryViewModel(private val repository: BookRepository) : ViewModel() {
     private val _libraryBusy = MutableStateFlow(false)
     val libraryBusy = _libraryBusy.asStateFlow()
 
-    fun import(uri: Uri, libraryId: String = "default") {
+    fun importBooks(uris: List<Uri>, libraryId: String) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
-            val result = repository.import(uri, libraryId)
-            _message.value = result.fold(
-                onSuccess = { "Imported ${it.fileName}" },
-                onFailure = { it.message ?: "Import failed" }
-            )
+            var imported = 0
+            var lastFileName = ""
+            var firstError: String? = null
+            for (uri in uris) {
+                repository.import(uri, libraryId).fold(
+                    onSuccess = { imported++; lastFileName = it.fileName },
+                    onFailure = {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        if (firstError == null) firstError = it.message ?: "Import failed"
+                    },
+                )
+            }
+            val failed = uris.size - imported
+            _message.value = when {
+                imported == 0 -> firstError ?: "Import failed"
+                failed > 0 -> "Imported $imported of ${uris.size} books. $firstError"
+                imported == 1 -> "Imported $lastFileName"
+                else -> "Imported $imported books"
+            }
         }
     }
 

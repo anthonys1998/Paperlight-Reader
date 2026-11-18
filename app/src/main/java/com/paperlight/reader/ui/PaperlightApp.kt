@@ -1,7 +1,6 @@
 package com.paperlight.reader.ui
 
 import android.net.Uri
-import android.provider.DocumentsContract
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -79,14 +78,13 @@ import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.Role
-
-private data class FolderBook(val uri: Uri, val name: String)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -157,6 +155,7 @@ private fun PaperlightAppContent(
     val scope = rememberCoroutineScope()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val pagerState = rememberPagerState(pageCount = { 2 })
+    var fileManagerMode by rememberSaveable { mutableStateOf(FileManagerMode.Browse) }
     var externalBook by remember { mutableStateOf<BookEntity?>(null) }
     var openingExternalFileName by remember { mutableStateOf<String?>(null) }
     val libraryPreferences = remember { context.getSharedPreferences("libraryAppearance", 0) }
@@ -188,18 +187,28 @@ private fun PaperlightAppContent(
     var aiScrapeBusy by remember { mutableStateOf(false) }
     var aiScrapeError by remember { mutableStateOf<String?>(null) }
     var showScrapeOptions by remember { mutableStateOf(false) }
-    var folder by remember { mutableStateOf<Uri?>(null) }
-    var candidates by remember { mutableStateOf<List<FolderBook>?>(null) }
+    var folder by remember { mutableStateOf<File?>(null) }
+    var candidates by remember { mutableStateOf<List<ExternalBookFile>?>(null) }
     var checked by remember { mutableStateOf(setOf<Uri>()) }
 
     val exportBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         uri?.let { viewModel.backup(it, restore = false) }
     }
     val restoreBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> pendingRestore = uri }
-    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        uris.forEach { viewModel.import(it, activeLibraryId ?: "default") }
+    fun showFileManager(mode: FileManagerMode) {
+        scope.launch {
+            if (drawer.isOpen) drawer.close()
+            fileManagerMode = mode
+            pagerState.animateScrollToPage(1)
+        }
     }
-    val scan = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { folder = it }
+
+    fun returnToLibrary() {
+        scope.launch {
+            pagerState.animateScrollToPage(0)
+            fileManagerMode = FileManagerMode.Browse
+        }
+    }
 
     fun openExternalBook(file: ExternalBookFile) {
         if (openingExternalFileName != null) return
@@ -256,34 +265,25 @@ private fun PaperlightAppContent(
         }
     }
     LaunchedEffect(folder) {
-        val tree = folder ?: return@LaunchedEffect
+        val root = folder ?: return@LaunchedEffect
         try {
             val found = withContext(Dispatchers.IO) {
-                val columns = arrayOf(
-                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                    DocumentsContract.Document.COLUMN_MIME_TYPE
-                )
-                val result = mutableListOf<FolderBook>()
-                val pending = java.util.ArrayDeque<String>().apply {
-                    add(DocumentsContract.getTreeDocumentId(tree))
-                }
-                val visited = mutableSetOf<String>()
+                val result = mutableListOf<ExternalBookFile>()
+                val pending = ArrayDeque<File>().apply { add(root) }
                 while (pending.isNotEmpty()) {
+                    ensureActive()
                     val directory = pending.removeFirst()
-                    if (!visited.add(directory)) continue
-                    val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, directory)
-                    context.contentResolver.query(children, columns, null, null, null)?.use { cursor ->
-                        while (cursor.moveToNext()) {
-                            val id = cursor.getString(0) ?: continue
-                            val name = cursor.getString(1) ?: continue
-                            if (cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) {
-                                pending.add(id)
-                            } else if (BookRepository.formatOf(name) != null) {
-                                result += FolderBook(DocumentsContract.buildDocumentUriUsingTree(tree, id), name)
-                            }
+                    val entries = directory.listFiles()
+                    if (directory == root) checkNotNull(entries) { "Could not read this folder." }
+                    for (entry in entries.orEmpty()) {
+                        ensureActive()
+                        if (java.nio.file.Files.isSymbolicLink(entry.toPath())) continue
+                        if (entry.isDirectory) {
+                            pending.add(entry)
+                        } else if (entry.isFile && BookRepository.formatOf(entry.name) != null) {
+                            result += ExternalBookFile(Uri.fromFile(entry), entry.name)
                         }
-                    } ?: error("Could not read this folder")
+                    }
                 }
                 result.sortedBy { it.name.lowercase() }
             }
@@ -292,9 +292,9 @@ private fun PaperlightAppContent(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            snackbar.showSnackbar("Could not read this folder")
+            scope.launch { snackbar.showSnackbar("Could not read this folder") }
         } finally {
-            folder = null
+            if (folder == root) folder = null
         }
     }
 
@@ -355,26 +355,26 @@ private fun PaperlightAppContent(
     val activeLibrary = libraries.find { it.id == activeLibraryId }
     val title = activeLibrary?.name ?: "All books"
     BackHandler(selectedBooks.isNotEmpty()) { selectedBooks = emptySet() }
-    BackHandler(pagerState.currentPage == 1) { scope.launch { pagerState.animateScrollToPage(0) } }
+    BackHandler(pagerState.currentPage == 1 || fileManagerMode != FileManagerMode.Browse) { returnToLibrary() }
+    Box(Modifier.fillMaxSize()) {
     HorizontalPager(
         state = pagerState,
-        userScrollEnabled = !drawer.isOpen,
+        userScrollEnabled = !drawer.isOpen && fileManagerMode == FileManagerMode.Browse,
         beyondViewportPageCount = 1,
-        modifier = Modifier.fillMaxSize().pointerInput(drawer.isOpen, pagerState) {
+        modifier = Modifier.fillMaxSize().pointerInput(drawer.isOpen, pagerState, fileManagerMode) {
             val touchSlop = viewConfiguration.touchSlop
             val menuSwipeDistance = 96.dp.toPx()
             val horizontalRatio = 1.5f
             awaitEachGesture {
-                // Observe after the pager and scrollable content have handled the event.
-                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
-                if (drawer.isOpen || pagerState.currentPage != 0 ||
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                if (drawer.isOpen || fileManagerMode != FileManagerMode.Browse || pagerState.currentPage != 0 ||
                     pagerState.canScrollBackward || pagerState.isScrollInProgress
                 ) return@awaitEachGesture
 
                 var directionDecided = false
                 var maxVerticalDistance = 0f
                 while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Final)
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
                     if (event.changes.any { it.id != down.id && it.pressed }) break
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
                     val distanceX = change.position.x - down.position.x
@@ -396,12 +396,26 @@ private fun PaperlightAppContent(
                         }
                         break
                     }
+                    // Claim only right swipes before the pager sees this movement.
+                    if (directionDecided && change.position != change.previousPosition) change.consume()
                 }
             }
         },
     ) { screen ->
       if (screen == 1) {
-        FileManagerScreen(onOpenFile = { openExternalBook(it) })
+        FileManagerScreen(
+            mode = fileManagerMode,
+            onClose = ::returnToLibrary,
+            onOpenFile = ::openExternalBook,
+            onImportFiles = { uris ->
+                viewModel.importBooks(uris, activeLibraryId ?: "default")
+                returnToLibrary()
+            },
+            onScanFolder = { selectedFolder ->
+                if (folder == null) folder = selectedFolder
+                returnToLibrary()
+            },
+        )
       } else {
        ModalNavigationDrawer(
         drawerState = drawer,
@@ -431,14 +445,15 @@ private fun PaperlightAppContent(
                     modifier = Modifier.padding(horizontal = 12.dp))
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 NavigationDrawerItem(label = { Text("Import books") }, selected = false,
-                    icon = { Icon(Icons.Rounded.Add, null) }, onClick = { import.launch(arrayOf("*/*")); scope.launch { drawer.close() } },
+                    icon = { Icon(Icons.Rounded.Add, null) }, onClick = { showFileManager(FileManagerMode.Import) },
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Scan folder") }, selected = false,
-                    icon = { Icon(Icons.Rounded.FolderOpen, null) }, onClick = { scan.launch(null); scope.launch { drawer.close() } },
+                    icon = { Icon(Icons.Rounded.FolderOpen, null) },
+                    onClick = { if (folder == null) showFileManager(FileManagerMode.Scan) },
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Browse device files") }, selected = false,
                     icon = { Icon(Icons.Rounded.FolderOpen, null) }, onClick = {
-                        scope.launch { drawer.close(); pagerState.animateScrollToPage(1) }
+                        showFileManager(FileManagerMode.Browse)
                     }, modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Create EPUB from website") }, selected = false,
                     icon = { Icon(Icons.Rounded.Link, null) }, onClick = { showCreateFromWeb = true; scope.launch { drawer.close() } },
@@ -545,13 +560,13 @@ private fun PaperlightAppContent(
                             DropdownMenuItem(
                                 text = { Text("Scan folder") },
                                 leadingIcon = { Icon(Icons.Rounded.FolderOpen, null) },
-                                onClick = { showMoreActions = false; scan.launch(null) },
+                                onClick = { showMoreActions = false; showFileManager(FileManagerMode.Scan) },
                                 enabled = folder == null
                             )
                             DropdownMenuItem(
                                 text = { Text("Import books") },
                                 leadingIcon = { Icon(Icons.Rounded.Add, null) },
-                                onClick = { showMoreActions = false; import.launch(arrayOf("*/*")) }
+                                onClick = { showMoreActions = false; showFileManager(FileManagerMode.Import) }
                             )
                         }
                     }
@@ -565,11 +580,10 @@ private fun PaperlightAppContent(
                 )
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = { Spacer(Modifier.navigationBarsPadding()) }
       ) { padding ->
           Column(Modifier.fillMaxSize().padding(padding)) {
-            if (libraryBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (libraryBusy || folder != null) LinearProgressIndicator(Modifier.fillMaxWidth())
             downloadProgress?.let { progress ->
                 Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -620,7 +634,7 @@ private fun PaperlightAppContent(
                     Spacer(Modifier.height(8.dp))
                     Text(if (search.isNotBlank()) "Try another title or author." else "Import books or move them here from another library.",
                         style = MaterialTheme.typography.bodyMedium)
-                    TextButton(onClick = { import.launch(arrayOf("*/*")) }) { Icon(Icons.Rounded.Add, null); Text("Import books") }
+                    TextButton(onClick = { showFileManager(FileManagerMode.Import) }) { Icon(Icons.Rounded.Add, null); Text("Import books") }
                 }
             } else {
                 val toggle: (BookEntity) -> Unit = { book ->
@@ -645,6 +659,9 @@ private fun PaperlightAppContent(
       }
        }
       }
+    }
+
+    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
     }
 
     if (showStatistics) ReadingStatisticsDialog(books) { showStatistics = false }
@@ -915,7 +932,7 @@ private fun PaperlightAppContent(
             },
             confirmButton = {
                 TextButton(enabled = checked.isNotEmpty(), onClick = {
-                    files.filter { it.uri in checked }.forEach { viewModel.import(it.uri, activeLibraryId ?: "default") }
+                    viewModel.importBooks(files.filter { it.uri in checked }.map { it.uri }, activeLibraryId ?: "default")
                     candidates = null
                 }) { Text("Import selected") }
             },
