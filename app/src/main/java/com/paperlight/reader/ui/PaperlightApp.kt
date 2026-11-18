@@ -12,8 +12,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.asImageBitmap
@@ -353,34 +351,18 @@ private fun PaperlightAppContent(
     val title = activeLibrary?.name ?: "All books"
     BackHandler(selectedBooks.isNotEmpty()) { selectedBooks = emptySet() }
     BackHandler(pagerState.currentPage == 1) { scope.launch { pagerState.animateScrollToPage(0) } }
-    val pagerGestureScope = rememberCoroutineScope()
     HorizontalPager(
         state = pagerState,
-        userScrollEnabled = false,
-        modifier = Modifier.fillMaxSize().pointerInput(pagerState.currentPage) {
-            var horizontalTravel = 0f
-            val threshold = 72.dp.toPx()
-            detectHorizontalDragGestures(
-                onHorizontalDrag = { change, amount ->
-                    horizontalTravel += amount
-                    change.consume()
-                },
-                onDragEnd = {
-                    if (horizontalTravel <= -threshold && pagerState.currentPage == 0)
-                        pagerGestureScope.launch { pagerState.animateScrollToPage(1) }
-                    else if (horizontalTravel >= threshold && pagerState.currentPage == 1)
-                        pagerGestureScope.launch { pagerState.animateScrollToPage(0) }
-                    horizontalTravel = 0f
-                },
-                onDragCancel = { horizontalTravel = 0f },
-            )
-        }
+        userScrollEnabled = !drawer.isOpen,
+        beyondViewportPageCount = 1,
+        modifier = Modifier.fillMaxSize(),
     ) { screen ->
       if (screen == 1) {
         FileManagerScreen(onOpenFile = { openExternalBook(it) })
       } else {
        ModalNavigationDrawer(
         drawerState = drawer,
+        gesturesEnabled = drawer.isOpen,
         drawerContent = {
             ModalDrawerSheet(Modifier.widthIn(max = 320.dp)) {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
