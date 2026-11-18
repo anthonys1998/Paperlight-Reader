@@ -20,6 +20,8 @@ import androidx.compose.ui.res.painterResource
 import com.paperlight.reader.data.BookArtwork
 import com.paperlight.reader.ui.reader.ImagePageReaderScreen
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -58,6 +60,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -349,13 +353,41 @@ private fun PaperlightAppContent(
     }
     val activeLibrary = libraries.find { it.id == activeLibraryId }
     val title = activeLibrary?.name ?: "All books"
+    val menuSwipeThreshold = with(LocalDensity.current) { 64.dp.toPx() }
+    val menuSwipeSlop = with(LocalDensity.current) { 8.dp.toPx() }
     BackHandler(selectedBooks.isNotEmpty()) { selectedBooks = emptySet() }
     BackHandler(pagerState.currentPage == 1) { scope.launch { pagerState.animateScrollToPage(0) } }
     HorizontalPager(
         state = pagerState,
         userScrollEnabled = !drawer.isOpen,
         beyondViewportPageCount = 1,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().pointerInput(drawer.isOpen, pagerState.currentPage) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                val startX = down.position.x
+                var rightSwipeStarted = false
+                var menuOpened = false
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+
+                    val distanceX = change.position.x - startX
+                    if (pagerState.currentPage == 0 && !drawer.isOpen && distanceX > menuSwipeSlop) {
+                        rightSwipeStarted = true
+                    }
+                    if (rightSwipeStarted) {
+                        // Consume rightward movement before HorizontalPager sees it.
+                        // Leftward movement is untouched and remains pager navigation.
+                        change.consume()
+                        if (!menuOpened && distanceX >= menuSwipeThreshold) {
+                            menuOpened = true
+                            scope.launch { drawer.open() }
+                        }
+                    }
+                }
+            }
+        },
     ) { screen ->
       if (screen == 1) {
         FileManagerScreen(onOpenFile = { openExternalBook(it) })

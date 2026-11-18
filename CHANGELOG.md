@@ -1,5 +1,6 @@
 ## 1.0
-- Swiping left from the library navigates to an in-app file explorer with folder navigation and direct book selection. The first visit asks for storage access.
+- Swiping right from the library opens the navigation menu. Swiping left continues to navigate to the in-app file explorer.
+- Remove Gemini voice playback. Read-aloud now uses Android text-to-speech, while Gemini API features remain available for other tasks.
 - Increase the EPUB reader’s top content margin so the first line and chapter headings sit lower on the page.
 - Picked books are read from temporary copies that are removed after leaving the reader.
 - Add E-Ink display mode: high-contrast black on white, paper textures off, page animations off, and gray annotation marks. Available from Accessibility and reader settings.

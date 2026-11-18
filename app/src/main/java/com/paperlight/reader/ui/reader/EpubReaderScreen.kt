@@ -21,7 +21,6 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -118,7 +117,6 @@ fun EpubReaderScreen(
     var toolMessage by remember { mutableStateOf<String?>(null) }
     var pendingScript by remember(book.id) { mutableStateOf<Pair<Int, String>?>(null) }
     val speech = remember(context, book.id) { ReaderSpeech(context) }
-    var useGeminiSpeech by remember { mutableStateOf(preferences.getBoolean("geminiSpeech", false)) }
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     DisposableEffect(speech, lifecycle) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -285,7 +283,7 @@ fun EpubReaderScreen(
     }
 
     fun readChapter(startOffset: Int? = null) {
-        if (!useGeminiSpeech && !speech.ready) {
+        if (!speech.ready) {
             toolMessage = "Android text-to-speech is unavailable. Check your installed speech engine."
             return
         }
@@ -298,7 +296,7 @@ fun EpubReaderScreen(
             val text = runCatching { JSONTokener(result ?: "null").nextValue() as? String }.getOrNull()
             if (chapterIndex == sourceChapter) {
                 if (text.isNullOrBlank()) toolMessage = "No readable text at this position."
-                else speech.play(text, publication.language, useGeminiSpeech)
+                else speech.play(text, publication.language)
             }
         }
     }
@@ -781,22 +779,7 @@ fun EpubReaderScreen(
                 title = { Text("Reader settings") },
                 text = {
                     Column(Modifier.verticalScroll(rememberScrollState())) {
-                        Text("Read aloud voice", style = MaterialTheme.typography.labelLarge)
-                        listOf(false to "Android TTS", true to "Gemini voice").forEach { (gemini, label) ->
-                            Row(Modifier.fillMaxWidth().selectable(
-                                selected = useGeminiSpeech == gemini,
-                                onClick = {
-                                    if (useGeminiSpeech != gemini) speech.stop()
-                                    useGeminiSpeech = gemini
-                                    preferences.edit().putBoolean("geminiSpeech", gemini).apply()
-                                },
-                                role = androidx.compose.ui.semantics.Role.RadioButton,
-                            ), verticalAlignment = Alignment.CenterVertically) {
-                                RadioButton(selected = useGeminiSpeech == gemini, onClick = null)
-                                Text(label)
-                            }
-                        }
-                        Text("Gemini sends the text you listen to to Google using your saved API key. Android TTS is used when Gemini is unavailable.",
+                        Text("Read aloud uses Android text-to-speech and works offline when an offline voice is installed.",
                             style = MaterialTheme.typography.bodySmall)
                         HorizontalDivider(Modifier.padding(vertical = 8.dp))
                         Text("Show or hide reading controls", style = MaterialTheme.typography.labelLarge)
