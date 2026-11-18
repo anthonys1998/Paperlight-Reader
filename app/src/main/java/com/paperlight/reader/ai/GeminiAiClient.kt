@@ -146,6 +146,10 @@ ${samples.chapterHtml}"""
         ).trim().take(MAX_SUMMARY_CHARS).ifBlank { "Gemini returned an empty summary. Try again." }
     }
 
+    suspend fun checkConnection() {
+        request("Reply with the single word OK.")
+    }
+
     private suspend fun request(prompt: String, jsonOutput: Boolean = false): String {
         val key = withContext(Dispatchers.IO) { keyStore.getKey() } ?: throw IllegalStateException("Add your Gemini API key to use AI features.")
         var attempt = 0
@@ -188,7 +192,7 @@ ${samples.chapterHtml}"""
                         check(length <= MAX_RESPONSE_CHARS) { "Gemini returned more text than this request supports." }
                     }
                 }.orEmpty()
-            if (status !in 200..299) throw GeminiHttpException(status, errorMessage(status, response))
+            if (status !in 200..299) throw GeminiHttpException(status, errorMessage(status, response, key))
             val root = JSONObject(response)
             val candidate = root.optJSONArray("candidates")?.optJSONObject(0)
             val reason = candidate?.optString("finishReason").orEmpty()
@@ -215,15 +219,18 @@ ${samples.chapterHtml}"""
         return JSONObject(cleaned.substring(start, end + 1))
     }
 
-    private fun errorMessage(status: Int, response: String): String {
-        val detail = runCatching { JSONObject(response).optJSONObject("error")?.optString("message") }.getOrNull().orEmpty()
-        return when (status) {
-            400, 401, 403 -> if (detail.contains("key", true) || status == 401)
-                "Gemini rejected this API key. Check it in AI settings." else "Gemini could not process the request. $detail"
-            429 -> "Gemini's free or paid API quota is currently limited. Check your AI Studio quota and try again later."
-            503 -> "Gemini is temporarily overloaded. The app retried this request. Try again later."
-            else -> "Gemini request failed (HTTP $status). ${detail.take(240)}".trim()
+    private fun errorMessage(status: Int, response: String, key: String): String {
+        val error = runCatching { JSONObject(response).optJSONObject("error") }.getOrNull()
+        val detail = error?.optString("message").orEmpty().replace(key, "[redacted]").take(450)
+        val code = error?.optString("status").orEmpty().take(80)
+        val fallback = when (status) {
+            401, 403 -> "Check the key and project permissions."
+            404 -> "This model or endpoint is unavailable for this project."
+            429 -> "Check the project's quota and rate limits in AI Studio."
+            503 -> "The service is temporarily unavailable. Try again later."
+            else -> "Check the request in AI Studio."
         }
+        return "Gemini $MODEL_ALIAS · HTTP $status $code".trimEnd() + "\n" + detail.ifBlank { fallback }
     }
 
     private companion object {
