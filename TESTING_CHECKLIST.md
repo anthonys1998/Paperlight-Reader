@@ -11,7 +11,8 @@
 
 ## 1.0 Device file browser
 
-- Swipe left from the library and confirm Android’s system file picker opens directly.
+- Swipe left from the library and confirm the device folder list appears on the second page after granting storage access on first use.
+- Navigate into and out of folders, then tap a supported book and confirm it opens directly.
 - Browse to supported EPUB, PDF, TXT, MOBI/AZW, CBZ or CBR files and choose each; confirm it opens in the matching reader without creating a library entry.
 - Cancel the picker and confirm the app returns to the library. Select an unsupported file and confirm a useful message appears.
 - Return from an externally opened book and choose another file; confirm temporary copies are cleaned up.

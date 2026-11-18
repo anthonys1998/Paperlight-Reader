@@ -1,5 +1,6 @@
 ## 1.0
-- Swiping left from the library opens Android’s system file picker directly. Browse storage and select a supported book to open without adding it to a library.
+- Swiping left from the library navigates to an in-app file explorer with folder navigation and direct book selection. The first visit asks for storage access.
+- Increase the EPUB reader’s top content margin so the first line and chapter headings sit lower on the page.
 - Picked books are read from temporary copies that are removed after leaving the reader.
 - Add E-Ink display mode: high-contrast black on white, paper textures off, page animations off, and gray annotation marks. Available from Accessibility and reader settings.
 - Draw reading content behind the transparent status bar so page turns do not reveal a blank top strip.

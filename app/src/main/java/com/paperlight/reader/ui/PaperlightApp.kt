@@ -2,7 +2,6 @@ package com.paperlight.reader.ui
 
 import android.net.Uri
 import android.provider.DocumentsContract
-import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -84,11 +83,6 @@ import androidx.compose.ui.semantics.Role
 
 private data class FolderBook(val uri: Uri, val name: String)
 
-private fun queryDisplayName(context: android.content.Context, uri: Uri): String? =
-    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) cursor.getString(0) else null
-    }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PaperlightApp(viewModel: LibraryViewModel) {
@@ -159,7 +153,6 @@ private fun PaperlightAppContent(
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val pagerState = rememberPagerState(pageCount = { 2 })
     var externalBook by remember { mutableStateOf<BookEntity?>(null) }
-    var selectedExternalUri by remember { mutableStateOf<Uri?>(null) }
     var openingExternalFileName by remember { mutableStateOf<String?>(null) }
     val libraryPreferences = remember { context.getSharedPreferences("libraryAppearance", 0) }
     var listView by rememberSaveable { mutableStateOf(libraryPreferences.getBoolean("listView", false)) }
@@ -198,18 +191,10 @@ private fun PaperlightAppContent(
         uri?.let { viewModel.backup(it, restore = false) }
     }
     val restoreBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> pendingRestore = uri }
-    val openBookPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) scope.launch { pagerState.animateScrollToPage(0) }
-        else selectedExternalUri = uri
-    }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { viewModel.import(it, activeLibraryId ?: "default") }
     }
     val scan = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { folder = it }
-
-    LaunchedEffect(pagerState.currentPage) {
-        if (pagerState.currentPage == 1 && externalBook == null) openBookPicker.launch(arrayOf("*/*"))
-    }
 
     fun openExternalBook(file: ExternalBookFile) {
         if (openingExternalFileName != null) return
@@ -221,7 +206,8 @@ private fun PaperlightAppContent(
                     val extension = file.name.substringAfterLast('.', "book").lowercase(java.util.Locale.ROOT)
                     val local = File(context.cacheDir, "$id.$extension")
                     try {
-                        context.contentResolver.openInputStream(file.uri)?.use { input ->
+                        (if (file.uri.scheme == "file") File(requireNotNull(file.uri.path)).inputStream()
+                            else context.contentResolver.openInputStream(file.uri))?.use { input ->
                             local.outputStream().use { output -> input.copyTo(output) }
                         } ?: error("Unable to read this file.")
                     } catch (failure: Exception) {
@@ -242,7 +228,6 @@ private fun PaperlightAppContent(
                 throw cancelled
             } catch (failure: Exception) {
                 snackbar.showSnackbar(failure.message ?: "Could not open this book.")
-                pagerState.animateScrollToPage(0)
             } finally {
                 openingExternalFileName = null
             }
@@ -257,26 +242,6 @@ private fun PaperlightAppContent(
         externalBook = null
         selectedId = null
         scope.launch { pagerState.animateScrollToPage(0) }
-    }
-
-    LaunchedEffect(selectedExternalUri) {
-        val uri = selectedExternalUri ?: return@LaunchedEffect
-        try {
-            val name = withContext(Dispatchers.IO) { queryDisplayName(context, uri) }
-            if (name.isNullOrBlank() || BookRepository.formatOf(name) == null) {
-                snackbar.showSnackbar("That file type is not supported. Choose an EPUB, PDF, TXT, MOBI/AZW, CBZ or CBR book.")
-                pagerState.animateScrollToPage(0)
-            } else {
-                openExternalBook(ExternalBookFile(uri, name))
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            snackbar.showSnackbar("Could not read the selected file.")
-            pagerState.animateScrollToPage(0)
-        } finally {
-            selectedExternalUri = null
-        }
     }
 
     LaunchedEffect(message) {
@@ -329,7 +294,6 @@ private fun PaperlightAppContent(
     }
 
     val opened = externalBook ?: books.find { it.id == selectedId }
-    
     if (opened != null && externalBook == null) TrackReadingTime(opened.id)
     if (opened != null && opened.format in setOf("PDF", "CBZ", "CBR")) {
         BackHandler { leaveOpenedBook() }
@@ -389,7 +353,7 @@ private fun PaperlightAppContent(
     BackHandler(pagerState.currentPage == 1) { scope.launch { pagerState.animateScrollToPage(0) } }
     HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { screen ->
       if (screen == 1) {
-        FileManagerScreen()
+        FileManagerScreen(onOpenFile = { openExternalBook(it) })
       } else {
        ModalNavigationDrawer(
         drawerState = drawer,

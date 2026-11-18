@@ -1172,8 +1172,9 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
    const height=window.innerHeight>48?window.innerHeight:Math.round($heightPx/ratio);
    layoutWidth=width; layoutHeight=height;
    const margin=Math.min(type.margins,Math.floor(Math.min(width,height)/4));
+   const topInset=Math.min(margin+16,Math.floor(height/3));
    const contentWidth=Math.max(1,width-2*margin);
-   const contentHeight=Math.max(1,height-2*margin);
+   const contentHeight=Math.max(1,height-topInset-margin);
    const family=type.font==='custom'?(customFontReady?'PaperlightCustom, serif':'serif'):type.font;
    const texture=eink?'none':type.texture==='grid'
      ? 'repeating-linear-gradient(0deg,transparent 0 19px,rgba(128,128,128,.11) 19px 20px),repeating-linear-gradient(90deg,transparent 0 19px,rgba(128,128,128,.11) 19px 20px)'
@@ -1197,7 +1198,7 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
        box-sizing:content-box!important;
        width:${'$'}{contentWidth}px!important;
        height:${'$'}{scrolling?'auto':contentHeight+'px'}!important;
-       margin:${'$'}{margin}px!important;
+       margin:${'$'}{topInset}px ${'$'}{margin}px ${'$'}{margin}px!important;
        columns:${'$'}{scrolling?'auto':contentWidth+'px 1'}!important;
        column-gap:${'$'}{2*margin}px!important;
        column-fill:auto!important;overflow-wrap:anywhere!important;
@@ -1822,7 +1823,8 @@ private fun buildReaderScript(themeMode: Int, fontScale: Float, initialFraction:
  function readingAnchor(){
    if(!document.caretRangeFromPoint) return null;
    const margin=Math.min(type.margins,Math.floor(Math.min(layoutWidth,layoutHeight)/4));
-   for(const y of [margin+6,margin+22,margin+40]){
+   const topInset=Math.min(margin+16,Math.floor(layoutHeight/3));
+   for(const y of [topInset+6,topInset+22,topInset+40]){
      const caret=document.caretRangeFromPoint(margin+8,y);
      const node=caret?.startContainer;
      if(node?.nodeType!==3||!content.contains(node)) continue;
