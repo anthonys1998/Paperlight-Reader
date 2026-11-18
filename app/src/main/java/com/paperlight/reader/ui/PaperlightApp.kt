@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -193,7 +195,8 @@ private fun PaperlightAppContent(
     var chapterPreview by remember { mutableStateOf<WebNovelPreview?>(null) }
     var previewBusy by remember { mutableStateOf(false) }
     var previewError by remember { mutableStateOf<String?>(null) }
-    var chapterLimit by rememberSaveable { mutableStateOf("2000") }
+    var firstChapter by rememberSaveable { mutableStateOf("1") }
+    var lastChapter by rememberSaveable { mutableStateOf("") }
     var chapterLinkSelector by remember { mutableStateOf("a[href]") }
     var chapterContentSelector by remember { mutableStateOf(".chapter-content, .chapter-body, #chapter-content, .read-content, .entry-content, article, main, #content") }
     var chapterTitleSelector by remember { mutableStateOf("h1, h2") }
@@ -903,8 +906,12 @@ private fun PaperlightAppContent(
         )
     }
     if (showCreateFromWeb) {
+        val first = firstChapter.toIntOrNull()
+        val last = lastChapter.toIntOrNull()
+        val validRange = first != null && first > 0 && (lastChapter.isBlank() || (last != null && last >= first))
         val options = WebNovelScrapeOptions(
-            maxChapters = chapterLimit.toIntOrNull() ?: 2_000,
+            firstChapter = first ?: 1,
+            lastChapter = last,
             chapterLinkSelector = chapterLinkSelector,
             chapterContentSelector = chapterContentSelector,
             chapterTitleSelector = chapterTitleSelector,
@@ -954,7 +961,41 @@ private fun PaperlightAppContent(
                         )
                         Text("Render pages in browser")
                     }
-                    TextButton(enabled = canCheckSite, onClick = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = firstChapter,
+                            onValueChange = {
+                                firstChapter = it.filter { char -> char in '0'..'9' }.take(9)
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            label = { Text("First chapter") },
+                            modifier = Modifier.weight(1f),
+                            enabled = !previewBusy && !aiScrapeBusy,
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                        OutlinedTextField(
+                            value = lastChapter,
+                            onValueChange = {
+                                lastChapter = it.filter { char -> char in '0'..'9' }.take(9)
+                                chapterPreview = null
+                                previewError = null
+                            },
+                            label = { Text("Last chapter") },
+                            placeholder = { Text("To the end") },
+                            modifier = Modifier.weight(1f),
+                            enabled = !previewBusy && !aiScrapeBusy,
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                    }
+                    Text(
+                        if (validRange) "Positions in the table of contents. Leave the last chapter blank to export to the end."
+                        else "Enter a positive first chapter and a last chapter at or after it.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(enabled = canCheckSite && validRange, onClick = {
                         chapterPreview = null
                         previewError = null
                         previewBusy = true
@@ -982,14 +1023,6 @@ private fun PaperlightAppContent(
                         Text(if (showScrapeOptions) "Hide site selectors" else "Advanced site selectors")
                     }
                     if (showScrapeOptions) {
-                        OutlinedTextField(value = chapterLimit,
-                            onValueChange = {
-                                chapterLimit = it.filter(Char::isDigit).take(5)
-                                chapterPreview = null
-                            },
-                            enabled = !previewBusy && !aiScrapeBusy,
-                            label = { Text("Maximum chapters") }, singleLine = true,
-                            supportingText = { Text("1–9,000. A longer book will ask you to increase this limit.") })
                         OutlinedTextField(
                             value = chapterLinkSelector,
                             onValueChange = {
@@ -1075,8 +1108,7 @@ private fun PaperlightAppContent(
                 }
             },
             confirmButton = {
-                TextButton(enabled = downloadProgress == null && canCheckSite &&
-                    chapterLimit.toIntOrNull()?.let { it in 1..9_000 } == true, onClick = {
+                TextButton(enabled = downloadProgress == null && canCheckSite && validRange, onClick = {
                     viewModel.createEpubFromUrl(
                         novelUrl,
                         options,

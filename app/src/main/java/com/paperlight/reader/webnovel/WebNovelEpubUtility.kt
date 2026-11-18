@@ -21,10 +21,11 @@ data class WebNovelScrapeOptions(
     val chapterContentSelector: String = ".chapter-content, .chapter-body, #chapter-content, .read-content, .entry-content, article, main, #content",
     val chapterTitleSelector: String = "h1, h2",
     val removeSelector: String = "script, style, noscript, nav, header, footer, aside, .ads, .advertisement, .share, .comments",
-    val maxChapters: Int = 2_000,
+    val firstChapter: Int = 1,
+    val lastChapter: Int? = null,
     val requestDelayMillis: Long = 500L,
     val renderInBrowser: Boolean = false
-)
+) : java.io.Serializable
 
 data class WebNovelEpubResult(val file: File, val title: String, val chapterCount: Int)
 data class WebNovelPreview(val chapterCount: Int, val chapterTitle: String, val excerpt: String)
@@ -39,7 +40,7 @@ class WebNovelEpubUtility(context: Context) {
         sampleChapterUrl: String = "",
         options: WebNovelScrapeOptions = WebNovelScrapeOptions(),
     ): WebNovelAiSamples = withContext(Dispatchers.IO) {
-        val discoveryOptions = WebNovelScrapeOptions(maxChapters = Int.MAX_VALUE, renderInBrowser = options.renderInBrowser)
+        val discoveryOptions = WebNovelScrapeOptions(renderInBrowser = options.renderInBrowser)
         val (toc, links) = chapterIndex(tableOfContentsUrl, discoveryOptions)
         val chapter = chapterDocument(sampleUrl(toc, links, sampleChapterUrl), discoveryOptions)
         WebNovelAiSamples(
@@ -54,7 +55,7 @@ class WebNovelEpubUtility(context: Context) {
         options: WebNovelScrapeOptions,
     ): WebNovelPreview = withContext(Dispatchers.IO) {
         val (toc, links) = chapterIndex(tableOfContentsUrl, options)
-        val url = sampleUrl(toc, links, sampleChapterUrl)
+        val url = sampleUrl(toc, links.inRange(options), sampleChapterUrl)
         val chapter = chapterDocument(url, options)
         val title = chapterTitle(chapter, options) ?: links.firstOrNull { it.first == url }?.second ?: chapter.title()
         val paragraphs = chapterParagraphs(chapter, options, title)
@@ -69,18 +70,20 @@ class WebNovelEpubUtility(context: Context) {
         onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }
     ): WebNovelEpubResult = withContext(Dispatchers.IO) {
         val start = validateHttpUrl(tableOfContentsUrl)
-        require(options.maxChapters in 1..9_000) { "Chapter limit must be between 1 and 9,000." }
         require(options.requestDelayMillis in 0L..10_000L) { "Request delay must be between 0 and 10 seconds." }
 
         var completed = false
         try {
             onProgress(0, 0, "Finding chapters…")
-            val (toc, links) = chapterIndex(start.toString(), options)
-            val title = toc.selectFirst("h1")?.text()?.trim()?.takeIf(String::isNotBlank)
+            val (toc, allLinks) = chapterIndex(start.toString(), options)
+            val links = allLinks.inRange(options)
+            val bookTitle = toc.selectFirst("h1")?.text()?.trim()?.takeIf(String::isNotBlank)
                 ?: toc.selectFirst("meta[property=og:site_name]")?.attr("content")?.trim()
                     ?.takeIf(String::isNotBlank)
                 ?: toc.title().trim().ifBlank { start.host }
 
+            val title = if (links.size == allLinks.size) bookTitle
+                else "$bookTitle (Chapters ${options.firstChapter}–${options.lastChapter ?: allLinks.size})"
             val epub = Book().apply { metadata.addTitle(title) }
             onProgress(0, links.size, title)
             var totalTextBytes = 0L
@@ -90,7 +93,7 @@ class WebNovelEpubUtility(context: Context) {
                 val chapterDoc = chapterDocument(url, options)
                 val chapterTitle = chapterTitle(chapterDoc, options)
                     ?: linkLabel
-                    ?: "Chapter ${index + 1}"
+                    ?: "Chapter ${options.firstChapter + index}"
                 val paragraphs = chapterParagraphs(chapterDoc, options, chapterTitle)
                 require(paragraphs.isNotEmpty()) { "No readable text found in $chapterTitle ($url)." }
                 val xhtml = chapterXhtml(chapterTitle, paragraphs)
@@ -119,27 +122,37 @@ class WebNovelEpubUtility(context: Context) {
         options: WebNovelScrapeOptions,
     ): Pair<Document, List<Pair<String, String?>>> {
         val start = validateHttpUrl(url)
-        fun links(document: Document, limit: Int): List<Pair<String, String?>> {
+        fun links(document: Document): List<Pair<String, String?>> {
             val origin = validateHttpUrl(document.baseUri())
             val selector = if (origin.host.equals("novelbin.xyz", true) &&
                 options.chapterLinkSelector == "a[href]"
             ) ".chapter-list a.chapter-item[href]" else options.chapterLinkSelector
-            return extractChapterLinks(document, origin, selector, limit)
+            return extractChapterLinks(document, origin, selector)
         }
         val toc = if (options.renderInBrowser) {
             renderer.load(start.toString()) { document ->
-                val found = links(document, Int.MAX_VALUE).size
+                val found = links(document).size
                 val expected = if (isNovelBin(document) && options.chapterLinkSelector == "a[href]") {
                     document.selectFirst(".chapter-box-count")?.text()?.substringBefore(' ')?.toIntOrNull()
                 } else null
                 found > 0 && (expected == null || found >= expected)
             }
         } else fetch(start.toString())
-        val chapterLinks = links(toc, options.maxChapters)
+        val chapterLinks = links(toc)
         require(chapterLinks.isNotEmpty()) {
             "No chapter links found. Check the table of contents URL and selectors, or enable browser rendering."
         }
         return toc to chapterLinks
+    }
+
+    private fun <T> List<T>.inRange(options: WebNovelScrapeOptions): List<T> {
+        val first = options.firstChapter
+        val last = options.lastChapter ?: size
+        require(first in 1..size && last in first..size) {
+            "Found $size chapters. Choose a range within 1–$size."
+        }
+        require(last - first + 1 <= 9_000) { "Choose at most 9,000 chapters per export." }
+        return subList(first - 1, last)
     }
 
     private fun sampleUrl(toc: Document, links: List<Pair<String, String?>>, sample: String): String {
@@ -201,8 +214,7 @@ class WebNovelEpubUtility(context: Context) {
     private fun extractChapterLinks(
         toc: Document,
         tocUri: URI,
-        selector: String,
-        limit: Int
+        selector: String
     ): List<Pair<String, String?>> {
         val candidates = toc.select(selector).mapNotNull { element ->
             val anchor = if (element.normalName() == "a") element else element.selectFirst("a[href]") ?: return@mapNotNull null
@@ -216,9 +228,7 @@ class WebNovelEpubUtility(context: Context) {
 
         val chapterHint = Regex("chapter|chap\\.?|episode|ep\\.?|part|volume|第.{0,8}[章話回卷]", RegexOption.IGNORE_CASE)
         val hinted = candidates.filter { (url, label) -> chapterHint.containsMatchIn(label.orEmpty()) || chapterHint.containsMatchIn(url) }
-        val chapters = hinted.ifEmpty { candidates }
-        require(chapters.size <= limit) { "Found ${chapters.size} chapters. Increase the chapter limit in advanced options to download them all." }
-        return chapters
+        return hinted.ifEmpty { candidates }
     }
 
     private fun selectContent(document: Document, selectors: String, allowBodyFallback: Boolean): Element? {
