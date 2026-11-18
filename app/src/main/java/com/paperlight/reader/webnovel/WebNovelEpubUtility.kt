@@ -2,6 +2,7 @@ package com.paperlight.reader.webnovel
 
 import android.content.Context
 import io.documentnode.epub4j.domain.Book
+import io.documentnode.epub4j.domain.MediaType
 import io.documentnode.epub4j.domain.Resource
 import io.documentnode.epub4j.epub.EpubWriter
 import kotlinx.coroutines.Dispatchers
@@ -85,6 +86,7 @@ class WebNovelEpubUtility(context: Context) {
             val title = if (links.size == allLinks.size) bookTitle
                 else "$bookTitle (Chapters ${options.firstChapter}–${options.lastChapter ?: allLinks.size})"
             val epub = Book().apply { metadata.addTitle(title) }
+            findCoverImage(toc, start)?.let(epub::setCoverImage)
             onProgress(0, links.size, title)
             var totalTextBytes = 0L
             links.forEachIndexed { index, (url, linkLabel) ->
@@ -198,6 +200,39 @@ class WebNovelEpubUtility(context: Context) {
         .followRedirects(true)
         .get()
 
+    private fun findCoverImage(toc: Document, pageUrl: URI): Resource? {
+        val imageUrl = sequenceOf(
+            toc.selectFirst("meta[property=og:image]")?.attr("content"),
+            toc.selectFirst("meta[name=twitter:image]")?.attr("content"),
+            toc.selectFirst("meta[property=twitter:image]")?.attr("content"),
+            toc.selectFirst("img[src]")?.absUrl("src"),
+        ).mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+            .mapNotNull { raw -> runCatching { pageUrl.resolve(raw) }.getOrNull() }
+            .firstOrNull { uri ->
+                (uri.scheme.equals("http", true) || uri.scheme.equals("https", true)) &&
+                    !uri.host.isNullOrBlank() && uri.userInfo == null
+            } ?: return null
+
+        return runCatching {
+            val response = Jsoup.connect(imageUrl.toString())
+                .userAgent(USER_AGENT)
+                .timeout(15_000)
+                .maxBodySize(MAX_COVER_BYTES)
+                .ignoreContentType(true)
+                .execute()
+            val mimeType = response.contentType().orEmpty().substringBefore(';').trim().lowercase()
+            val extension = when (mimeType) {
+                "image/jpeg", "image/jpg" -> "jpg"
+                "image/png" -> "png"
+                "image/gif" -> "gif"
+                else -> return@runCatching null
+            }
+            Resource(response.bodyAsBytes(), "cover.$extension").apply {
+                mediaType = MediaType(mimeType, extension)
+            }
+        }.getOrNull()
+    }
+
     private fun sanitizedSample(document: Document, limit: Int): String {
         val sample = document.clone()
         sample.select("script, style, noscript, svg, iframe, object, embed, form, nav, footer, header, aside, img, video, audio").remove()
@@ -289,6 +324,7 @@ class WebNovelEpubUtility(context: Context) {
 
     private companion object {
         const val MAX_PAGE_BYTES = 8 * 1024 * 1024
+        const val MAX_COVER_BYTES = 8 * 1024 * 1024
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36 PaperlightReader/0.10"
     }
 }

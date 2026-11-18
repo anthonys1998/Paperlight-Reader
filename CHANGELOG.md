@@ -1,3 +1,8 @@
+## 1.6
+- Make continuous scrolling the default reading mode for PDFs while retaining the Pages/Scroll setting.
+- Add pinch and visible zoom controls to scrolling PDFs. Keep one-finger vertical swipes available for document scrolling and preserve zoom while the reading position updates.
+- Android build and device behavior remain unverified in this environment.
+
 ## 1.0
 - Swiping right from the library opens the navigation menu. Swiping left continues to navigate to the in-app file explorer.
 - Remove Gemini voice playback. Read-aloud now uses Android text-to-speech, while Gemini API features remain available for other tasks.

@@ -38,6 +38,8 @@ import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.ZoomIn
+import androidx.compose.material.icons.rounded.ZoomOut
 import com.paperlight.reader.data.ReaderAnnotation
 import com.paperlight.reader.data.ReaderAnnotationStore
 import com.paperlight.reader.data.BookmarkStore
@@ -93,8 +95,8 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     var position by rememberSaveable(book.id) { mutableFloatStateOf(book.progress) }
     var page by remember(book.id) { mutableStateOf<RenderedPage?>(null) }
     var error by remember(book.id) { mutableStateOf<String?>(null) }
-    var zoom by remember(position) { mutableFloatStateOf(1f) }
-    var pan by remember(position) { mutableStateOf(Offset.Zero) }
+    var zoom by remember(book.id) { mutableFloatStateOf(1f) }
+    var pan by remember(book.id) { mutableStateOf(Offset.Zero) }
     var dark by remember { mutableStateOf(preferences.getInt("lightDarkPalette", 0) == 1) }
     var texture by remember { mutableStateOf(preferences.getString("texture", "none") ?: "none") }
     var turningDirection by remember { mutableIntStateOf(1) }
@@ -117,7 +119,10 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     val bookmarkStore = remember(context) { BookmarkStore(context) }
     var bookmarks by remember(book.id) { mutableStateOf(bookmarkStore.read(book.id)) }
     var editingNote by remember { mutableStateOf<ReaderAnnotation?>(null) }
-    var continuous by remember { mutableStateOf(preferences.getBoolean("imageContinuous", false)) }
+    val readingModeKey = if (book.format == "PDF") "pdfContinuous" else "imageContinuous"
+    var continuous by remember(book.id) {
+        mutableStateOf(preferences.getBoolean(readingModeKey, book.format == "PDF"))
+    }
     val scrollState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var scrollReady by remember { mutableStateOf(false) }
@@ -194,7 +199,38 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                 detectTapGestures(onTap = { if (singleTap) barsVisible = !barsVisible },
                     onDoubleTap = { if (!singleTap) barsVisible = !barsVisible })
             }
-            .then(if (continuous) Modifier else Modifier.pointerInput(book.id, fitWidth) {
+            .then(if (continuous && book.format == "PDF") Modifier.pointerInput(book.id) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var wasTransforming = false
+                    var pressed: Boolean
+                    do {
+                        val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                        pressed = event.changes.any { it.pressed }
+                        val multiplePointers = event.changes.count { it.pressed } > 1
+                        val movement = event.calculatePan()
+                        val horizontalPan = zoom > 1f && abs(movement.x) > abs(movement.y) * 1.5f
+                        if (multiplePointers || wasTransforming || horizontalPan) {
+                            wasTransforming = true
+                            val centroid = event.calculateCentroid(useCurrent = false)
+                            val factor = event.calculateZoom()
+                            val oldZoom = zoom
+                            val nextZoom = (oldZoom * factor).coerceIn(1f, 4f)
+                            val ratio = nextZoom / oldZoom
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            val panDelta = if (multiplePointers) movement else Offset(movement.x, 0f)
+                            val anchored = if (centroid != Offset.Unspecified) {
+                                (pan + center - centroid) * ratio + centroid - center + panDelta
+                            } else pan + panDelta
+                            zoom = nextZoom
+                            val maxX = size.width * (zoom - 1f) / 2f
+                            val maxY = size.height * (zoom - 1f) / 2f
+                            pan = Offset(anchored.x.coerceIn(-maxX, maxX), anchored.y.coerceIn(-maxY, maxY))
+                            event.changes.filter { it.positionChanged() }.forEach { it.consume() }
+                        }
+                    } while (pressed)
+                }
+            } else if (continuous) Modifier else Modifier.pointerInput(book.id, fitWidth) {
                 var settling: kotlinx.coroutines.Job? = null
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -207,7 +243,7 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                     do {
                         val event = awaitPointerEvent()
                         pressed = event.changes.any { it.pressed }
-                        if (event.changes.any { it.isConsumed } && !swiping && !transformed) break
+                        if (event.changes.any { it.positionChanged() && it.isConsumed } && !swiping && !transformed) break
                         val delta = event.calculatePan()
                         val factor = event.calculateZoom()
                         val multiple = event.changes.count { it.pressed } > 1
@@ -228,7 +264,7 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                         } else {
                             accumulated += delta
                             if (abs(accumulated.x) > viewConfiguration.touchSlop && abs(accumulated.x) > abs(accumulated.y) * 1.4f) swiping = true
-                            if (swiping && !reduceMotion) {
+                            if (swiping && !reduceMotion && pdfSource == null) {
                                 dragOffset = accumulated.x.coerceIn(-size.width * .9f, size.width * .9f)
                                 event.changes.filter { it.positionChanged() }.forEach { it.consume() }
                             }
@@ -238,8 +274,8 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                         val current = page
                         val direction = if (accumulated.x < 0) 1 else -1
                         if (current != null && current.index + direction in 0 until current.count) {
-                            swipeCommitted = true
-                            turnStartFraction = if (reduceMotion) 1f else abs(dragOffset) / size.width
+                            swipeCommitted = pdfSource == null
+                            turnStartFraction = if (pdfSource != null) 0f else if (reduceMotion) 1f else abs(dragOffset) / size.width
                             goTo(current.index + direction)
                         } else dragOffset = 0f
                     } else {
@@ -260,7 +296,13 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                 }
                 current == null -> CircularProgressIndicator(color = palette.accent)
                 continuous -> {
-                    LazyColumn(state = scrollState, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(state = scrollState, modifier = Modifier.fillMaxSize().graphicsLayer {
+                        scaleX = zoom
+                        scaleY = zoom
+                        translationX = pan.x
+                        translationY = pan.y
+                        clip = true
+                    }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(current.count, key = { it }) { index ->
                             ScrollImagePage(book, index, current.count, pdfSource)
                         }
@@ -324,6 +366,21 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
             onClick = { zoom = 1f; pan = Offset.Zero },
             modifier = Modifier.align(Alignment.CenterEnd).padding(12.dp)) { Text("${(zoom * 100).toInt()}% · Reset") }
         if (barsVisible) Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().shadow(12.dp).background(palette.panel)) {
+        if (book.format == "PDF" && continuous) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                IconButton(enabled = zoom > 1f, onClick = {
+                    zoom = (zoom / 1.25f).coerceAtLeast(1f)
+                    pan = Offset.Zero
+                }) { Icon(Icons.Rounded.ZoomOut, "Zoom out", tint = palette.ink) }
+                TextButton(onClick = { zoom = 1f; pan = Offset.Zero }) {
+                    Text("${(zoom * 100).toInt()}% · Reset", color = palette.ink)
+                }
+                IconButton(enabled = zoom < 4f, onClick = { zoom = (zoom * 1.25f).coerceAtMost(4f) }) {
+                    Icon(Icons.Rounded.ZoomIn, "Zoom in", tint = palette.ink)
+                }
+            }
+        }
         page?.let { current ->
             val requested = kotlin.math.round((current.count - 1) * position).toInt()
             Slider(value = scrubPage ?: requested.toFloat(),
@@ -359,8 +416,10 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
             IconButton(enabled = ready, onClick = { toggleBookmark() }) {
                 Icon(if (bookmarks.any { it.chapter == (if (continuous) scrollState.firstVisibleItemIndex else page?.index) }) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Toggle bookmark")
             }
-            IconButton(onClick = { fitWidth = !fitWidth; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageFitWidth", fitWidth).apply() }) {
-                Icon(Icons.Rounded.AspectRatio, if (fitWidth) "Fit whole page" else "Fit page width")
+            if (!(book.format == "PDF" && continuous)) {
+                IconButton(onClick = { fitWidth = !fitWidth; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageFitWidth", fitWidth).apply() }) {
+                    Icon(Icons.Rounded.AspectRatio, if (fitWidth) "Fit whole page" else "Fit page width")
+                }
             }
             IconButton(onClick = { dark = !dark; preferences.edit().putInt("lightDarkPalette", if (dark) 1 else 0).apply() }) {
                 Icon(if (dark) Icons.Rounded.LightMode else Icons.Rounded.DarkMode, if (dark) "Light mode" else "Dark mode")
@@ -395,10 +454,12 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
     if (settingsVisible) AlertDialog(onDismissRequest = { settingsVisible = false }, title = { Text("Reader settings") },
         text = {
             Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!continuous) {
                 Text("Page fit", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = !fitWidth, onClick = { fitWidth = false; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageFitWidth", false).apply() }, label = { Text("Whole page") })
                     FilterChip(selected = fitWidth, onClick = { fitWidth = true; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageFitWidth", true).apply() }, label = { Text("Page width") })
+                }
                 }
                 if (book.format == "PDF" && android.os.Build.VERSION.SDK_INT >= 35) TextButton(onClick = {
                     textPage = if (continuous) scrollState.firstVisibleItemIndex else page?.index
@@ -411,8 +472,8 @@ internal fun ImagePageReaderScreen(book: BookEntity, onBack: () -> Unit, onProgr
                 }
                 Text("Reading mode", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = !continuous, onClick = { continuous = false; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageContinuous", false).apply() }, label = { Text("Pages") })
-                    FilterChip(selected = continuous, onClick = { continuous = true; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean("imageContinuous", true).apply() }, label = { Text("Scroll") })
+                    FilterChip(selected = !continuous, onClick = { continuous = false; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean(readingModeKey, false).apply() }, label = { Text("Pages") })
+                    FilterChip(selected = continuous, onClick = { continuous = true; zoom = 1f; pan = Offset.Zero; preferences.edit().putBoolean(readingModeKey, true).apply() }, label = { Text("Scroll") })
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {

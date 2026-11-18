@@ -167,6 +167,9 @@ private fun PaperlightAppContent(
     var openingExternalFileName by remember { mutableStateOf<String?>(null) }
     val libraryPreferences = remember { context.getSharedPreferences("libraryAppearance", 0) }
     var listView by rememberSaveable { mutableStateOf(libraryPreferences.getBoolean("listView", false)) }
+    var keepScreenOn by remember { mutableStateOf(libraryPreferences.getBoolean("keepScreenOn", false)) }
+    var shelfColumns by remember { mutableStateOf(libraryPreferences.getInt("shelfColumns", 3).coerceIn(2, 4)) }
+    var markRecent by remember { mutableStateOf(libraryPreferences.getBoolean("markRecent", true)) }
     var sortOrder by rememberSaveable { mutableStateOf(libraryPreferences.getString("sortOrder", "Recent") ?: "Recent") }
     var showSort by remember { mutableStateOf(false) }
     var filter by rememberSaveable { mutableStateOf("All") }
@@ -322,6 +325,15 @@ private fun PaperlightAppContent(
     }
 
     val opened = externalBook ?: books.find { it.id == selectedId }
+    if (opened != null && keepScreenOn) {
+        val view = androidx.compose.ui.platform.LocalView.current
+        DisposableEffect(view) {
+            val previous = view.keepScreenOn
+            view.keepScreenOn = true
+            onDispose { view.keepScreenOn = previous }
+        }
+    }
+
     if (opened != null && externalBook == null) TrackReadingTime(opened.id)
     if (opened != null && opened.format in setOf("PDF", "CBZ", "CBR")) {
         BackHandler { leaveOpenedBook() }
@@ -498,7 +510,7 @@ private fun PaperlightAppContent(
                 NavigationDrawerItem(label = { Text("Reading statistics") }, selected = false,
                     icon = { Icon(Icons.Rounded.BarChart, null) }, onClick = { showStatistics = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
-                NavigationDrawerItem(label = { Text("Accessibility") }, selected = false,
+                NavigationDrawerItem(label = { Text("App settings") }, selected = false,
                     icon = { Icon(Icons.Rounded.Accessibility, null) }, onClick = { showAccessibility = true; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Gemini AI key") }, selected = false,
@@ -700,14 +712,14 @@ private fun PaperlightAppContent(
                 }
                 if (listView) LazyColumn(Modifier.weight(1f)) {
                     items(filtered, key = { it.id }) { book ->
-                        BookListRow(book, book.id == latest, book.id in selectedBooks,
+                        BookListRow(book, markRecent && book.id == latest, book.id in selectedBooks,
                             onClick = { if (selectedBooks.isEmpty()) selectedId = book.id else toggle(book) }, onLongClick = { toggle(book) })
                     }
                 } else {
-                    val rows = filtered.chunked(3)
+                    val rows = filtered.chunked(shelfColumns)
                     LazyColumn(Modifier.weight(1f).background(Color(0xFF61412C)), contentPadding = PaddingValues(top = 4.dp)) {
                         items(count = maxOf(4, rows.size), key = { index -> "shelf:$index" }) { index ->
-                            ShelfRow(rows.getOrNull(index).orEmpty(), latest, selectedBooks,
+                            ShelfRow(rows.getOrNull(index).orEmpty(), latest.takeIf { markRecent }, selectedBooks, shelfColumns,
                                 onOpen = { selectedId = it.id }, onToggle = toggle)
                         }
                     }
@@ -766,9 +778,31 @@ private fun PaperlightAppContent(
     if (showAccessibility) {
         AlertDialog(
             onDismissRequest = { showAccessibility = false },
-            title = { Text("Accessibility") },
+            title = { Text("App settings") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Books per shelf", style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (count in 2..4) FilterChip(selected = shelfColumns == count, onClick = {
+                            shelfColumns = count
+                            libraryPreferences.edit().putInt("shelfColumns", count).apply()
+                        }, label = { Text(count.toString()) })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Mark last read book", Modifier.weight(1f))
+                        Switch(checked = markRecent, onCheckedChange = {
+                            markRecent = it
+                            libraryPreferences.edit().putBoolean("markRecent", it).apply()
+                        })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Keep screen on while reading", Modifier.weight(1f))
+                        Switch(checked = keepScreenOn, onCheckedChange = {
+                            keepScreenOn = it
+                            libraryPreferences.edit().putBoolean("keepScreenOn", it).apply()
+                        })
+                    }
+                    HorizontalDivider()
                     Text("Interface text size", style = MaterialTheme.typography.titleSmall)
                     Slider(
                         value = uiTextScale,
@@ -1204,7 +1238,7 @@ private fun BookTile(
 
 @Composable
 private fun ShelfRow(
-    books: List<BookEntity>, recentId: String?, selectedIds: Set<String>,
+    books: List<BookEntity>, recentId: String?, selectedIds: Set<String>, columns: Int,
     onOpen: (BookEntity) -> Unit, onToggle: (BookEntity) -> Unit
 ) {
     Column(Modifier.fillMaxWidth()) {
@@ -1213,7 +1247,7 @@ private fun ShelfRow(
                 Modifier.matchParentSize(), contentScale = ContentScale.FillBounds)
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.Bottom) {
-                repeat(3) { index ->
+                repeat(columns) { index ->
                     Box(Modifier.weight(1f).aspectRatio(.74f)) {
                         books.getOrNull(index)?.let { book ->
                             BookTile(book, book.id == recentId, book.id in selectedIds, selectedIds.isNotEmpty(),
