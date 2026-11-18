@@ -187,7 +187,7 @@ ${samples.chapterHtml}"""
                     }
                 }
             }
-            output.ifBlank { throw IllegalStateException("Gemini returned no text. Try again.") }
+            return output.ifBlank { throw IllegalStateException("Gemini returned no text. Try again.") }
         } finally {
             connection.disconnect()
         }
