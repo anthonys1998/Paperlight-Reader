@@ -37,4 +37,16 @@ class ReaderAnnotationStore(context: Context) {
         }.toString())
         editor.apply()
     }
+
+    fun writeAndCommit(bookId: String, annotations: List<ReaderAnnotation>): Boolean {
+        val editor = preferences.edit()
+        if (annotations.isEmpty()) editor.remove(bookId)
+        else editor.putString(bookId, JSONArray().apply {
+            annotations.forEach { item ->
+                put(JSONObject().put("id", item.id).put("chapter", item.chapter)
+                    .put("start", item.start).put("end", item.end).put("quote", item.quote).put("note", item.note).put("color", item.color))
+            }
+        }.toString())
+        return editor.commit()
+    }
 }

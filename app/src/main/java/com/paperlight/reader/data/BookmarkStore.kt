@@ -21,4 +21,11 @@ class BookmarkStore(context: Context) {
         else editor.putStringSet(bookId, bookmarks.map { "${it.chapter}:${it.fraction}" }.toSet())
         editor.apply()
     }
+
+    fun writeAndCommit(bookId: String, bookmarks: List<ReaderBookmark>): Boolean {
+        val editor = preferences.edit()
+        if (bookmarks.isEmpty()) editor.remove(bookId)
+        else editor.putStringSet(bookId, bookmarks.map { "${it.chapter}:${it.fraction}" }.toSet())
+        return editor.commit()
+    }
 }

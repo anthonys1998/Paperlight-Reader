@@ -1,11 +1,14 @@
 package com.paperlight.reader.ui
 
 import android.net.Uri
+import android.content.Intent
+import androidx.core.content.FileProvider
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -41,6 +44,8 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.ViewList
@@ -176,11 +181,19 @@ private fun PaperlightAppContent(
     var editingLibraryId by remember { mutableStateOf<String?>(null) }
     var deletingLibraryId by remember { mutableStateOf<String?>(null) }
     val libraryBusy by viewModel.libraryBusy.collectAsState()
+    val backupRecoveryBlocked by viewModel.backupRecoveryBlocked.collectAsState()
     var libraryError by remember { mutableStateOf<String?>(null) }
     var showStatistics by remember { mutableStateOf(false) }
     var showAccessibility by remember { mutableStateOf(false) }
     var showGroqApiKeyScreen by remember { mutableStateOf(false) }
     var pendingRestore by remember { mutableStateOf<Uri?>(null) }
+    var showBackupExportOptions by remember { mutableStateOf(false) }
+    var backupIncludeApiKey by remember { mutableStateOf(false) }
+    var backupPassword by remember { mutableStateOf("") }
+    var restorePassword by remember { mutableStateOf("") }
+    var restoreReplaceSettings by remember { mutableStateOf(false) }
+    var restoreReplaceGroqKey by remember { mutableStateOf(false) }
+    var exportBookId by remember { mutableStateOf<String?>(null) }
     var showMoreActions by remember { mutableStateOf(false) }
     var showLibraryMenu by remember { mutableStateOf(false) }
     var showCreateLibrary by remember { mutableStateOf(false) }
@@ -212,9 +225,52 @@ private fun PaperlightAppContent(
     var checked by remember { mutableStateOf(setOf<Uri>()) }
 
     val exportBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-        uri?.let { viewModel.backup(it, restore = false) }
+        uri?.let { viewModel.backup(it, restore = false, includeApiKey = backupIncludeApiKey, password = backupPassword.takeIf { backupIncludeApiKey }) }
+        backupPassword = ""
+        backupIncludeApiKey = false
     }
-    val restoreBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> pendingRestore = uri }
+    val restoreBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        pendingRestore = uri
+        restorePassword = ""
+        restoreReplaceSettings = false
+        restoreReplaceGroqKey = false
+    }
+    val exportBook = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val source = exportBookId?.let { id -> books.firstOrNull { it.id == id } }
+        val target = result.data?.data?.takeIf { result.resultCode == android.app.Activity.RESULT_OK }
+        exportBookId = null
+        if (source != null && target != null) scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(target, "wt")?.use { output ->
+                        File(source.localPath).inputStream().use { input -> input.copyTo(output) }
+                    } ?: error("Could not write the exported book.")
+                }
+            }.onSuccess { snackbar.showSnackbar("Exported ${source.fileName}.") }
+                .onFailure { snackbar.showSnackbar(it.message ?: "Could not export this book.") }
+        }
+    }
+    fun shareBook(book: BookEntity) {
+        runCatching {
+            val file = File(book.localPath)
+            require(file.isFile) { "The original book file is missing." }
+            val contentUri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+            val mime = when (book.format.uppercase()) {
+                "EPUB" -> "application/epub+zip"
+                "PDF" -> "application/pdf"
+                "TXT" -> "text/plain"
+                "CBZ" -> "application/vnd.comicbook+zip"
+                "CBR" -> "application/vnd.comicbook-rar"
+                "MOBI", "AZW3" -> "application/octet-stream"
+                else -> "application/octet-stream"
+            }
+            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                type = mime
+                putExtra(Intent.EXTRA_STREAM, contentUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }, "Share ${book.title}"))
+        }.onFailure { scope.launch { snackbar.showSnackbar(it.message ?: "Could not share this book.") } }
+    }
     fun showFileManager(mode: FileManagerMode) {
         scope.launch {
             if (drawer.isOpen) drawer.close()
@@ -518,7 +574,7 @@ private fun PaperlightAppContent(
                     modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Export backup") }, selected = false,
                     icon = { Icon(Icons.Rounded.Backup, null) }, onClick = {
-                        if (!libraryBusy) exportBackup.launch("VibeReader-backup.zip")
+                        if (!libraryBusy) showBackupExportOptions = true
                         scope.launch { drawer.close() }
                     }, modifier = Modifier.padding(horizontal = 12.dp))
                 NavigationDrawerItem(label = { Text("Restore backup") }, selected = false,
@@ -583,6 +639,25 @@ private fun PaperlightAppContent(
                 },
                 actions = {
                     if (selectedBooks.isNotEmpty()) {
+                        selectedBooks.singleOrNull()?.let { id -> books.firstOrNull { it.id == id } }?.let { selected ->
+                            IconButton(onClick = {
+                                val mime = when (selected.format.uppercase()) {
+                                    "EPUB" -> "application/epub+zip"
+                                    "PDF" -> "application/pdf"
+                                    "TXT" -> "text/plain"
+                                    "CBZ" -> "application/vnd.comicbook+zip"
+                                    "CBR" -> "application/vnd.comicbook-rar"
+                                    else -> "application/octet-stream"
+                                }
+                                exportBookId = selected.id
+                                exportBook.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                    addCategory(Intent.CATEGORY_OPENABLE)
+                                    type = mime
+                                    putExtra(Intent.EXTRA_TITLE, selected.fileName)
+                                })
+                            }) { Icon(Icons.Rounded.FileDownload, "Export selected book") }
+                            IconButton(onClick = { shareBook(selected) }) { Icon(Icons.Rounded.Share, "Share selected book") }
+                        }
                         IconButton(onClick = { showMoveBooks = true }) { Icon(Icons.Rounded.DriveFileMove, "Move selected books") }
                         IconButton(onClick = { showDeleteBooks = true }) { Icon(Icons.Rounded.Delete, "Delete selected books") }
                         IconButton(onClick = { selectedBooks = filtered.map { it.id }.toSet() }) { Icon(Icons.Rounded.SelectAll, "Select all visible books") }
@@ -849,11 +924,66 @@ private fun PaperlightAppContent(
         )
     }
     if (showGroqApiKeyScreen) GroqApiKeyScreen(onClose = { showGroqApiKeyScreen = false })
+    if (showBackupExportOptions) {
+        AlertDialog(
+            onDismissRequest = { showBackupExportOptions = false; backupPassword = "" },
+            title = { Text("Export app backup") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Includes library books, reading data, annotations, supported app settings, saved note summaries, and custom fonts. Website conversion checkpoints and custom discovery sources are not included yet.")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = backupIncludeApiKey, onCheckedChange = { backupIncludeApiKey = it; if (!it) backupPassword = "" })
+                        Text("Include Groq API key (password-encrypted)")
+                    }
+                    if (backupIncludeApiKey) OutlinedTextField(
+                        value = backupPassword,
+                        onValueChange = { backupPassword = it.take(256) },
+                        label = { Text("Backup password (12+ characters)") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !backupIncludeApiKey || backupPassword.length >= 12, onClick = {
+                    showBackupExportOptions = false
+                    exportBackup.launch(if (backupIncludeApiKey) "VibeReader-protected-backup.vrb" else "VibeReader-backup.zip")
+                }) { Text("Choose destination") }
+            },
+            dismissButton = { TextButton(onClick = { showBackupExportOptions = false; backupPassword = "" }) { Text("Cancel") } },
+        )
+    }
     pendingRestore?.let { uri ->
-        AlertDialog(onDismissRequest = { pendingRestore = null }, title = { Text("Restore backup?") },
-            text = { Text("Books, libraries, reading progress, notes and bookmarks will be imported. Books already present will be skipped.") },
-            confirmButton = { TextButton(enabled = !libraryBusy, onClick = { pendingRestore = null; viewModel.backup(uri, restore = true) }) { Text("Restore") } },
-            dismissButton = { TextButton(onClick = { pendingRestore = null }) { Text("Cancel") } })
+        AlertDialog(onDismissRequest = { pendingRestore = null; restorePassword = "" }, title = { Text("Restore backup?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Books already present will be skipped. Missing settings and summaries are added. Choose below whether to replace existing settings or the saved Groq key. Enter a password only for an encrypted backup.")
+                    OutlinedTextField(value = restorePassword, onValueChange = { restorePassword = it.take(256) },
+                        label = { Text("Backup password (if protected)") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = restoreReplaceSettings, onCheckedChange = { restoreReplaceSettings = it })
+                        Text("Replace existing app settings")
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = restoreReplaceGroqKey, onCheckedChange = { restoreReplaceGroqKey = it })
+                        Text("Allow replacing the saved Groq API key")
+                    }
+                }
+            },
+            confirmButton = { TextButton(enabled = !libraryBusy, onClick = {
+                pendingRestore = null
+                viewModel.backup(
+                    uri,
+                    restore = true,
+                    password = restorePassword.takeIf(String::isNotBlank),
+                    replaceExistingSettings = restoreReplaceSettings,
+                    replaceExistingGroqKey = restoreReplaceGroqKey,
+                )
+                restorePassword = ""
+            }) { Text("Restore") } },
+            dismissButton = { TextButton(onClick = { pendingRestore = null; restorePassword = "" }) { Text("Cancel") } })
     }
     opened?.let {
         AlertDialog(
@@ -1179,6 +1309,18 @@ private fun PaperlightAppContent(
                 }) { Text("Import selected") }
             },
             dismissButton = { TextButton(onClick = { candidates = null }) { Text("Close") } }
+        )
+    }
+    if (backupRecoveryBlocked) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Library recovery required") },
+            text = { Text("Library startup recovery did not finish. Retry before using the library; no library changes will be accepted yet.") },
+            confirmButton = {
+                TextButton(enabled = !libraryBusy, onClick = viewModel::retryBackupRecovery) {
+                    Text(if (libraryBusy) "Recovering…" else "Retry recovery")
+                }
+            },
         )
     }
 }

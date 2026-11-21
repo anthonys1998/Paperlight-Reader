@@ -30,11 +30,49 @@ jobs:
           gradle-version: '9.1.0'
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
+        run: gradle :app:testDebugUnitTest :app:assembleDebug -PappVersionCode=$((GITHUB_RUN_NUMBER + 40)) --stacktrace
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: Paperlight-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Build consistently signed release APK when signing secrets are configured
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::warning::Release signing secrets are not configured. Only a debug APK was built; it may not update an existing installation. Configure the original signing key before distributing update APKs."
+            exit 0
+          fi
+          trap 'rm -f "$RUNNER_TEMP/vibe-reader-release.jks"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/vibe-reader-release.jks"
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/vibe-reader-release.jks"
+          gradle :app:assembleRelease -PappVersionCode=$((GITHUB_RUN_NUMBER + 40)) --stacktrace
+
+      - name: Verify release APK signature
+        if: ${{ hashFiles('app/build/outputs/apk/release/app-release.apk') != '' }}
+        env:
+          ANDROID_EXPECTED_CERT_SHA256: ${{ secrets.ANDROID_EXPECTED_CERT_SHA256 }}
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          if [ -n "$ANDROID_EXPECTED_CERT_SHA256" ]; then
+            actual=$("$APKSIGNER" verify --print-certs "$APK" | awk -F': ' '/Signer #1 certificate SHA-256 digest/ {print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]')
+            expected=$(printf '%s' "$ANDROID_EXPECTED_CERT_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
+            test -n "$actual" && test "$actual" = "$expected" || { echo "::error::Release APK certificate does not match ANDROID_EXPECTED_CERT_SHA256"; exit 1; }
+          fi
+
+      - name: Upload release APK
+        if: ${{ hashFiles('app/build/outputs/apk/release/app-release.apk') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Paperlight-release
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error

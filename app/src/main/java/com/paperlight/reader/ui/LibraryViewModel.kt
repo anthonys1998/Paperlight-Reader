@@ -32,6 +32,11 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
     private val _message = MutableStateFlow<String?>(null)
     val message = _message.asStateFlow()
 
+    private val _libraryBusy = MutableStateFlow(true)
+    val libraryBusy = _libraryBusy.asStateFlow()
+    private val _backupRecoveryBlocked = MutableStateFlow(true)
+    val backupRecoveryBlocked = _backupRecoveryBlocked.asStateFlow()
+
     init {
         viewModelScope.launch {
             WebNovelExportService.downloadResult.collect { message ->
@@ -42,12 +47,17 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
         }
         viewModelScope.launch {
             try {
+                repository.recoverInterruptedBackupRestore()
                 repository.ensureDefaultLibrary()
                 repository.refreshMetadata()
+                _backupRecoveryBlocked.value = false
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
+                _backupRecoveryBlocked.value = true
                 _message.value = failure.message ?: "Could not initialize the library."
+            } finally {
+                _libraryBusy.value = false
             }
         }
     }
@@ -56,11 +66,35 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
         _message.compareAndSet(shown, null)
     }
 
-    private val _libraryBusy = MutableStateFlow(false)
-    val libraryBusy = _libraryBusy.asStateFlow()
+    private fun recoveryAllowsLibraryAction(): Boolean {
+        if (_backupRecoveryBlocked.value) {
+            _message.value = "Finish backup recovery before using the library."
+            return false
+        }
+        return true
+    }
+
+    fun retryBackupRecovery() {
+        if (!_backupRecoveryBlocked.value || _libraryBusy.value) return
+        _libraryBusy.value = true
+        viewModelScope.launch {
+            try {
+                repository.recoverInterruptedBackupRestore()
+                repository.ensureDefaultLibrary()
+                _backupRecoveryBlocked.value = false
+                _message.value = null
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                _message.value = failure.message ?: "Backup recovery could not finish."
+            } finally {
+                _libraryBusy.value = false
+            }
+        }
+    }
 
     fun importBooks(uris: List<Uri>, libraryId: String) {
-        if (uris.isEmpty()) return
+        if (uris.isEmpty() || !recoveryAllowsLibraryAction()) return
         viewModelScope.launch {
             var imported = 0
             var lastFileName = ""
@@ -85,6 +119,10 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
     }
 
     fun importDownloadedEpub(file: File, title: String, author: String, libraryId: String) {
+        if (!recoveryAllowsLibraryAction()) {
+            file.delete()
+            return
+        }
         viewModelScope.launch {
             try {
                 repository.importGeneratedEpub(file, title, author, libraryId).fold(
@@ -98,14 +136,17 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
     }
 
     fun updateProgress(bookId: String, progress: Float) {
+        if (!recoveryAllowsLibraryAction()) return
         viewModelScope.launch { repository.updateProgress(bookId, progress) }
     }
 
     fun remove(book: BookEntity) {
+        if (!recoveryAllowsLibraryAction()) return
         viewModelScope.launch { repository.remove(book) }
     }
 
     fun removeBooks(ids: List<String>) {
+        if (!recoveryAllowsLibraryAction()) return
         viewModelScope.launch {
             runCatching { repository.removeBooks(ids) }
                 .onFailure { _message.value = it.message ?: "Could not remove the selected books." }
@@ -113,6 +154,10 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
     }
 
     fun moveBooks(ids: List<String>, libraryId: String, onComplete: (Boolean) -> Unit) {
+        if (!recoveryAllowsLibraryAction()) {
+            onComplete(false)
+            return
+        }
         if (_libraryBusy.value) return
         _libraryBusy.value = true
         viewModelScope.launch {
@@ -130,6 +175,10 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
     }
 
     fun saveLibrary(id: String?, name: String, onComplete: (String?, String?) -> Unit) {
+        if (!recoveryAllowsLibraryAction()) {
+            onComplete(null, "Finish backup recovery before using the library.")
+            return
+        }
         if (_libraryBusy.value) return
         _libraryBusy.value = true
         viewModelScope.launch {
@@ -143,6 +192,10 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
     }
 
     fun deleteLibrary(id: String, onComplete: (Boolean) -> Unit) {
+        if (!recoveryAllowsLibraryAction()) {
+            onComplete(false)
+            return
+        }
         if (_libraryBusy.value) return
         _libraryBusy.value = true
         viewModelScope.launch {
@@ -158,21 +211,31 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
         }
     }
 
-    fun backup(uri: Uri, restore: Boolean) {
+    fun backup(
+        uri: Uri,
+        restore: Boolean,
+        includeApiKey: Boolean = false,
+        password: String? = null,
+        replaceExistingSettings: Boolean = false,
+        replaceExistingGroqKey: Boolean = false,
+    ) {
+        if (!recoveryAllowsLibraryAction()) return
         if (_libraryBusy.value) return
         _libraryBusy.value = true
         viewModelScope.launch {
             try {
                 if (restore) {
-                    val count = repository.restoreBackup(uri)
-                    _message.value = "Restored $count book${if (count == 1) "" else "s"}."
+                    val count = repository.restoreBackup(uri, password, replaceExistingSettings, replaceExistingGroqKey)
+                    _message.value = "Backup restore complete; added $count book${if (count == 1) "" else "s"}."
                 } else {
-                    repository.exportBackup(uri)
+                    repository.exportBackup(uri, includeApiKey, password)
                     _message.value = "Backup saved."
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                if (restore && repository.backupRestorePending()) _backupRecoveryBlocked.value = true
                 throw cancelled
             } catch (failure: Exception) {
+                if (restore && repository.backupRestorePending()) _backupRecoveryBlocked.value = true
                 _message.value = failure.message ?: "Backup operation failed."
             } finally { _libraryBusy.value = false }
         }
@@ -195,6 +258,7 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
     fun cancelConversion() { conversionJob?.cancel() }
 
     fun convertPdf(source: File, fallbackTitle: String, mode: PdfEpubMode, libraryId: String) {
+        if (!recoveryAllowsLibraryAction()) return
         if (conversionJob?.isActive == true) return
         _conversionProgress.value = 0 to 0
         conversionJob = viewModelScope.launch {
@@ -219,6 +283,7 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
         options: WebNovelScrapeOptions = WebNovelScrapeOptions(),
         libraryId: String = "default"
     ) {
+        if (!recoveryAllowsLibraryAction()) return
         if (downloadProgress.value != null) return
         try {
             WebNovelExportService.start(context, url, options, libraryId)

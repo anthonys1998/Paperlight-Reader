@@ -35,7 +35,7 @@ Vibe Reader is an offline-first Android ebook reader project. Imported files are
 - Sort by recent, title, author, progress or import date. Switch between shelves and a metadata list, and filter unread, reading or finished books.
 - Imported EPUB metadata supplies title and author. Older EPUB entries with missing author metadata are refreshed.
 - PDF/comic controls include hidden menus, page notes, bookmarks, jump-to-page, fit-to-width, fit-to-screen and continuous scrolling. Android 15+ also provides PDF page-text selection and page-linked highlights.
-- Local backup includes original books, library membership, progress, notes and bookmarks. Restore adds missing book IDs and preserves books already present. Reader appearance, custom fonts and reading statistics are device settings and are not included in this backup format.
+- Version 2 local backups include original books, libraries, reading progress, notes, bookmarks, supported app settings, reading statistics, saved note summaries and custom fonts. Version 1 backups remain restorable. Existing books are skipped; existing settings are preserved unless the user explicitly opts to replace them. Including the Groq API key requires a password-protected backup. Conversion jobs/checkpoints and custom discovery sources are not yet part of backup.
 - Reading time counts only while the book screen is active and the app is resumed. Historical reading time is unavailable for earlier versions.
 - EPUB creation displays chapter progress and can be cancelled.
 - Turning page sheets stay opaque.
@@ -94,5 +94,20 @@ when you push a branch. You can also start it from **Actions → Build Android A
 Run workflow** once the workflow is on the default branch. After a successful run,
 download **VibeReader-debug** from the run's **Artifacts** section and extract
 `app-debug.apk`.
+
+To produce an APK that can update an existing installation, configure the same
+release keystore used by that installation as GitHub Actions secrets:
+`ANDROID_KEYSTORE_BASE64` (base64-encoded JKS/PKCS12 file),
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`.
+The workflow emits a signed release artifact only when all four are configured.
+After comparing the release certificate with a known-good APK, set the optional
+`ANDROID_EXPECTED_CERT_SHA256` secret to its SHA-256 certificate fingerprint; CI
+will reject a release signed by a different certificate. GitHub's workflow run
+number plus 40 supplies `versionCode` (run 1 builds 41); keep this workflow and
+its run history when distributing updates.
+Debug artifacts use the runner's debug signing key and are not a reliable update
+channel. If the original release key is unavailable, Android will reject an
+in-place update signed with a replacement key; export a complete backup before
+any necessary reinstall.
 
 The bundled libmobi 0.12 source is in `app/src/main/cpp/libmobi`. Its license and author notices are included there. The build leaves libmobi’s encryption support disabled.

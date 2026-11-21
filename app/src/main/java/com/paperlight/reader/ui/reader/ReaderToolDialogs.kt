@@ -19,6 +19,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.data.ReaderAnnotation
+import com.paperlight.reader.data.NoteSummaryStore
 import com.paperlight.reader.ai.GroqAiClient
 import com.paperlight.reader.ai.GroqApiKeyStore
 import com.paperlight.reader.ui.GroqApiKeyScreen
@@ -133,12 +134,35 @@ internal fun ReaderNotesDialog(
     val aiClient = remember(context) { GroqAiClient(context) }
     var hasApiKey by remember { mutableStateOf(keyStore.hasKey()) }
     var showApiKeyScreen by remember { mutableStateOf(false) }
-    var summary by remember(book.id) { mutableStateOf<String?>(null) }
+    val summaryStore = remember(context) { NoteSummaryStore(context) }
+    var savedSummary by remember(book.id) { mutableStateOf(summaryStore.read(book.id)) }
+    var editingSummary by remember(book.id) { mutableStateOf(false) }
+    var summaryDraft by remember(book.id) { mutableStateOf(savedSummary?.text.orEmpty()) }
+    var confirmSummaryReplacement by remember(book.id) { mutableStateOf(false) }
     var summaryError by remember(book.id) { mutableStateOf<String?>(null) }
     var summarizing by remember(book.id) { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     val otherNotes = otherBook?.let { readOther(it.id) }.orEmpty()
     val order = compareBy(ReaderAnnotation::chapter, ReaderAnnotation::start)
+    fun regenerateSummary() {
+        coroutineScope.launch {
+            summarizing = true
+            summaryError = null
+            try {
+                val result = aiClient.summarizeNotes(annotations)
+                summaryStore.save(book.id, result, manuallyEdited = false, model = aiClient.selectedModel(),
+                    noteIds = annotations.filter { it.note.isNotBlank() }.map { it.id })
+                savedSummary = summaryStore.read(book.id)
+                summaryDraft = result
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                summaryError = failure.message ?: "Could not summarize these notes."
+            } finally {
+                summarizing = false
+            }
+        }
+    }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = palette.paper, contentColor = palette.ink) {
             Column {
@@ -166,22 +190,11 @@ internal fun ReaderNotesDialog(
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(
-                                enabled = !summarizing && annotations.any { it.note.isNotBlank() },
+                                enabled = !summarizing && !editingSummary && annotations.any { it.note.isNotBlank() },
                                 onClick = {
                                     if (!hasApiKey) showApiKeyScreen = true
-                                    else coroutineScope.launch {
-                                        summarizing = true
-                                        summaryError = null
-                                        try {
-                                            summary = aiClient.summarizeNotes(annotations)
-                                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                                            throw cancelled
-                                        } catch (failure: Exception) {
-                                            summaryError = failure.message ?: "Could not summarize these notes."
-                                        } finally {
-                                            summarizing = false
-                                        }
-                                    }
+                                    else if (savedSummary?.manuallyEdited == true) confirmSummaryReplacement = true
+                                    else regenerateSummary()
                                 }
                             ) {
                                 if (summarizing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -192,11 +205,34 @@ internal fun ReaderNotesDialog(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = palette.ink.copy(alpha = .72f)
                             )
-                            summary?.let { result ->
+                            savedSummary?.let { saved ->
                                 OutlinedCard(Modifier.fillMaxWidth()) {
                                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Text("Summary of your notes", style = MaterialTheme.typography.titleSmall)
-                                        Text(result, style = MaterialTheme.typography.bodyMedium)
+                                        if (editingSummary) {
+                                            OutlinedTextField(
+                                                value = summaryDraft,
+                                                onValueChange = { summaryDraft = it.take(12_000) },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                label = { Text("Edit summary") },
+                                                minLines = 4,
+                                            )
+                                            Row {
+                                                TextButton(onClick = { summaryDraft = saved.text; editingSummary = false }) { Text("Cancel") }
+                                                TextButton(enabled = summaryDraft.isNotBlank(), onClick = {
+                                                    summaryStore.save(book.id, summaryDraft.trim(), manuallyEdited = true,
+                                                        model = saved.model, noteIds = saved.noteIds)
+                                                    savedSummary = summaryStore.read(book.id)
+                                                    editingSummary = false
+                                                }) { Text("Save") }
+                                            }
+                                        } else {
+                                            Text(saved.text, style = MaterialTheme.typography.bodyMedium)
+                                            Row {
+                                                TextButton(onClick = { summaryDraft = saved.text; editingSummary = true }) { Text("Edit") }
+                                                if (saved.manuallyEdited) Text("Manually edited", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -242,6 +278,17 @@ internal fun ReaderNotesDialog(
                 }
             }
         }
+    }
+    if (confirmSummaryReplacement) {
+        AlertDialog(
+            onDismissRequest = { confirmSummaryReplacement = false },
+            title = { Text("Replace edited summary?") },
+            text = { Text("This summary was edited manually. Regenerating will replace those edits.") },
+            confirmButton = {
+                TextButton(onClick = { confirmSummaryReplacement = false; regenerateSummary() }) { Text("Regenerate") }
+            },
+            dismissButton = { TextButton(onClick = { confirmSummaryReplacement = false }) { Text("Keep edits") } },
+        )
     }
     if (showApiKeyScreen) GroqApiKeyScreen(
         onClose = { showApiKeyScreen = false },

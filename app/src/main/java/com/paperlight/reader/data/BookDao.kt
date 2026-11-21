@@ -42,6 +42,9 @@ interface BookDao {
     @Query("SELECT * FROM books")
     suspend fun allBooks(): List<BookEntity>
 
+    @Query("SELECT * FROM books WHERE id = :id LIMIT 1")
+    suspend fun bookById(id: String): BookEntity?
+
     @Query("SELECT * FROM libraries")
     suspend fun allLibraries(): List<LibraryEntity>
 

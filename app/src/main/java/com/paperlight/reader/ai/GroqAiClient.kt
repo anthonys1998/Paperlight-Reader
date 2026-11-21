@@ -39,12 +39,29 @@ class GroqApiKeyStore(context: Context) {
     }
 
     fun saveKey(key: String) {
+        preferences.edit().putString(KEY_VALUE, prepareEncryptedValue(key)).apply()
+    }
+
+    fun hasStoredValue(): Boolean = preferences.contains(KEY_VALUE)
+
+    /** Produces a device-local Keystore ciphertext without changing the stored key. */
+    fun prepareEncryptedValue(key: String): String {
         val clean = key.trim()
         require(clean.length in 20..500) { "Enter a valid Groq API key." }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val packed = cipher.iv + cipher.doFinal(clean.toByteArray(Charsets.UTF_8))
-        preferences.edit().putString(KEY_VALUE, Base64.encodeToString(packed, Base64.NO_WRAP)).apply()
+        return Base64.encodeToString(packed, Base64.NO_WRAP)
+    }
+
+    fun restoreEncryptedValue(encoded: String) {
+        validateEncryptedValue(encoded)
+        check(preferences.edit().putString(KEY_VALUE, encoded).commit()) { "Could not restore the Groq API key." }
+    }
+
+    fun validateEncryptedValue(encoded: String) {
+        val decoded = decryptValue(encoded)
+        require(decoded.length in 20..500) { "The Groq API key in this restore is invalid." }
     }
 
     fun clear() {
@@ -63,6 +80,14 @@ class GroqApiKeyStore(context: Context) {
                 .build()
         )
         return generator.generateKey()
+    }
+
+    private fun decryptValue(encoded: String): String {
+        val packed = Base64.decode(encoded, Base64.NO_WRAP)
+        require(packed.size > GCM_IV_BYTES)
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(GCM_TAG_BITS, packed, 0, GCM_IV_BYTES))
+        return String(cipher.doFinal(packed, GCM_IV_BYTES, packed.size - GCM_IV_BYTES), Charsets.UTF_8)
     }
 
     companion object {
@@ -151,6 +176,8 @@ ${samples.chapterHtml}"""
     }
 
     private val prefs = context.getSharedPreferences("groqModels", Context.MODE_PRIVATE)
+
+    fun selectedModel(): String? = prefs.getString("model", null)
 
     suspend fun models(): List<String> = withContext(Dispatchers.IO) {
         val data = call("models").getJSONArray("data")

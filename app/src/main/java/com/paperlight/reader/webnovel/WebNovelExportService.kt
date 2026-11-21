@@ -89,11 +89,11 @@ class WebNovelExportService : Service() {
                 stopSelf()
             }
         }
-        return START_NOT_STICKY
+        return START_REDELIVER_INTENT
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
-        result.value = "Android stopped the export after its background time limit. Try a smaller chapter range."
+        result.value = "Android stopped this conversion at its background time limit. Saved chapters are checkpointed; retry later to resume without downloading them again."
         job?.cancel()
         stopSelf()
     }
