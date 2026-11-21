@@ -42,6 +42,10 @@ jobs:
           log = pathlib.Path(os.environ['RUNNER_TEMP']) / 'build-debug.log'
           if log.exists():
               lines = log.read_text(errors='replace').splitlines()
+              compiler_errors = [line for line in lines if re.match(r'^\s*(?:e:|error:)', line)]
+              for line in compiler_errors[:30]:
+                  escaped = line[:6000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print(f'::warning title=Compiler error::{escaped}')
               starts = [i for i, line in enumerate(lines) if 'FAILURE: Build failed' in line]
               details = '\n'.join(lines[starts[-1]:starts[-1] + 65] if starts else lines[-65:])
               escaped = details[:12000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')

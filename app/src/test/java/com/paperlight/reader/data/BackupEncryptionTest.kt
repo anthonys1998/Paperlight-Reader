@@ -12,6 +12,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.nio.file.Files
 import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
 
@@ -52,7 +53,7 @@ class BackupEncryptionTest {
 
     @Test
     fun largeThirtyFiveMegabyteBackupStreamsWithBoundedBuffers() = runBlocking {
-        val directory = createTempDir(prefix = "backup-encryption-large-")
+        val directory = Files.createTempDirectory("backup-encryption-large-").toFile()
         val source = File(directory, "source.bin")
         val encrypted = File(directory, "encrypted.vrb")
         val restored = File(directory, "restored.bin")
