@@ -30,7 +30,30 @@ jobs:
           gradle-version: '9.1.0'
 
       - name: Build debug APK
-        run: gradle :app:testDebugUnitTest :app:assembleDebug -PappVersionCode=$((GITHUB_RUN_NUMBER + 40)) --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:testDebugUnitTest :app:assembleDebug -PappVersionCode=$((GITHUB_RUN_NUMBER + 40)) --stacktrace --info --refresh-dependencies 2>&1 | tee "$RUNNER_TEMP/build-debug.log"
+
+      - name: Report build failure details
+        if: failure()
+        shell: python
+        run: |
+          import os, pathlib, re
+          log = pathlib.Path(os.environ['RUNNER_TEMP']) / 'build-debug.log'
+          if log.exists():
+              matches = [line for line in log.read_text(errors='replace').splitlines()
+                         if re.search(r'Resource missing|Could not|could not|Could not GET|Could not HEAD|Received status code|^e:|^> |not found|FAILURE:', line)]
+              for line in matches[-25:]:
+                  escaped = line.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print(f'::warning title=Build diagnostic::{escaped}')
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics
+          path: ${{ runner.temp }}/build-debug.log
+          if-no-files-found: ignore
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
