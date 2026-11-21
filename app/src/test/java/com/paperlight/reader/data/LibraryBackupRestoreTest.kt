@@ -81,6 +81,28 @@ class LibraryBackupRestoreTest {
     }
 
     @Test
+    fun encryptedRestoreRejectsWrongPasswordEarlyThenRestoresWithCorrectPassword() = runBlocking {
+        val contents = "authenticated encrypted book".toByteArray()
+        val archive = createArchive(bookManifest("encrypted-book", contents), mapOf("books/encrypted-book" to contents))
+        val encrypted = encryptArchive(archive, "correct horse battery staple")
+        val progress = mutableListOf<BackupProgressStage>()
+
+        val wrongPassword = runCatching {
+            backup.restore(Uri.fromFile(encrypted), "incorrect horse battery staple") { progress += it.stage }
+        }.exceptionOrNull()
+
+        assertTrue(wrongPassword?.message.orEmpty().contains("Password is incorrect"))
+        assertNull(database.bookDao().bookById("encrypted-book"))
+        assertFalse(backup.hasPendingRestore())
+
+        assertEquals(1, backup.restore(Uri.fromFile(encrypted), "correct horse battery staple") { progress += it.stage })
+        assertArrayEquals(contents, File(requireNotNull(database.bookDao().bookById("encrypted-book")).localPath).readBytes())
+        assertTrue(progress.contains(BackupProgressStage.Decrypting))
+        assertTrue(progress.contains(BackupProgressStage.Validating))
+        assertTrue(progress.contains(BackupProgressStage.Publishing))
+    }
+
+    @Test
     fun insufficientStorageRejectsRestoreBeforePublishingBooks() = runBlocking {
         ShadowStatFs.registerStats(context.filesDir, 1_000_000, 0, 0)
         val contents = "a staged text book".toByteArray()
@@ -331,6 +353,16 @@ class LibraryBackupRestoreTest {
             }
         }
         return archive
+    }
+
+    private suspend fun encryptArchive(archive: File, password: String): File {
+        val encrypted = File(context.cacheDir, "restore-test-${UUID.randomUUID()}.vrb")
+        archive.inputStream().buffered().use { input ->
+            encrypted.outputStream().buffered().use { output ->
+                BackupEncryption.encrypt(input, output, password.toCharArray(), archive.length())
+            }
+        }
+        return encrypted
     }
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")

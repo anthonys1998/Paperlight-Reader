@@ -7,6 +7,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.paperlight.reader.data.BookEntity
 import com.paperlight.reader.data.BookRepository
+import com.paperlight.reader.data.BackupProgress
+import com.paperlight.reader.data.BackupProgressStage
 import com.paperlight.reader.data.PdfEpubMode
 import java.io.File
 import com.paperlight.reader.webnovel.WebNovelScrapeOptions
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class LibraryViewModel(private val repository: BookRepository, private val context: Context) : ViewModel() {
@@ -36,6 +39,9 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
     val libraryBusy = _libraryBusy.asStateFlow()
     private val _backupRecoveryBlocked = MutableStateFlow(true)
     val backupRecoveryBlocked = _backupRecoveryBlocked.asStateFlow()
+    private val _backupProgress = MutableStateFlow<BackupProgress?>(null)
+    val backupProgress = _backupProgress.asStateFlow()
+    private var backupJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -222,23 +228,36 @@ class LibraryViewModel(private val repository: BookRepository, private val conte
         if (!recoveryAllowsLibraryAction()) return
         if (_libraryBusy.value) return
         _libraryBusy.value = true
-        viewModelScope.launch {
+        _backupProgress.value = BackupProgress(if (restore) BackupProgressStage.Decrypting else BackupProgressStage.Preparing)
+        backupJob = viewModelScope.launch {
             try {
                 if (restore) {
-                    val count = repository.restoreBackup(uri, password, replaceExistingSettings, replaceExistingGroqKey)
+                    val count = repository.restoreBackup(uri, password, replaceExistingSettings, replaceExistingGroqKey) {
+                        _backupProgress.value = it
+                    }
                     _message.value = "Backup restore complete; added $count book${if (count == 1) "" else "s"}."
                 } else {
-                    repository.exportBackup(uri, includeApiKey, password)
+                    repository.exportBackup(uri, includeApiKey, password) { _backupProgress.value = it }
                     _message.value = "Backup saved."
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                if (restore && repository.backupRestorePending()) _backupRecoveryBlocked.value = true
+                val recoveryPending = restore && repository.backupRestorePending()
+                if (recoveryPending) _backupRecoveryBlocked.value = true
+                _message.value = if (recoveryPending) "Restore canceled; library recovery is required before further changes." else "Backup operation canceled."
                 throw cancelled
             } catch (failure: Exception) {
                 if (restore && repository.backupRestorePending()) _backupRecoveryBlocked.value = true
                 _message.value = failure.message ?: "Backup operation failed."
-            } finally { _libraryBusy.value = false }
+            } finally {
+                _backupProgress.value = null
+                _libraryBusy.value = false
+                backupJob = null
+            }
         }
+    }
+
+    fun cancelBackup() {
+        backupJob?.cancel()
     }
 
     val downloadProgress = WebNovelExportService.downloadProgress

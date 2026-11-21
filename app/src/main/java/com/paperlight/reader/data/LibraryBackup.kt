@@ -3,6 +3,7 @@ package com.paperlight.reader.data
 import android.content.Context
 import android.net.Uri
 import android.os.StatFs
+import android.provider.OpenableColumns
 import com.paperlight.reader.ai.GroqApiKeyStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -40,12 +41,21 @@ private data class ValidatedRestoreBook(
 
 /** Portable, additive backups of original books, libraries, progress and annotations. */
 internal class LibraryBackup(private val context: Context, private val dao: BookDao) {
-    suspend fun export(destination: Uri, includeApiKey: Boolean = false, password: String? = null) = withContext(Dispatchers.IO) {
+    suspend fun export(
+        destination: Uri,
+        includeApiKey: Boolean = false,
+        password: String? = null,
+        onProgress: (BackupProgress) -> Unit = {},
+    ) = withContext(Dispatchers.IO) {
         require(!includeApiKey || !password.isNullOrBlank()) { "A password is required when including the Groq API key." }
+        require(!includeApiKey || requireNotNull(password).length >= 12) { "Use a backup password with at least 12 characters." }
         val apiKey = if (includeApiKey) requireNotNull(GroqApiKeyStore(context).getKey()) {
             "No Groq API key is saved on this device."
         } else null
         val snapshot = dao.backupSnapshot()
+        val totalBookBytes = snapshot.first.sumOf { File(it.localPath).length().coerceAtLeast(0L) }
+        var scannedBookBytes = 0L
+        onProgress(BackupProgress(BackupProgressStage.Scanning, 0L, totalBookBytes))
         val annotations = ReaderAnnotationStore(context)
         val bookmarks = BookmarkStore(context)
         val manifest = JSONObject().put("format", "paperlight-backup").put("version", 2)
@@ -60,7 +70,9 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
                     .put("fileName", book.fileName).put("format", book.format).put("libraryId", book.libraryId)
                     .put("importedAt", book.importedAt).put("lastOpenedAt", book.lastOpenedAt ?: JSONObject.NULL)
                     .put("progress", book.progress.toDouble())
-                    .put("sha256", sha256(File(book.localPath)))
+                    .put("sha256", sha256(File(book.localPath)) { scanned ->
+                        onProgress(BackupProgress(BackupProgressStage.Scanning, scannedBookBytes + scanned, totalBookBytes))
+                    }.also { scannedBookBytes += File(book.localPath).length().coerceAtLeast(0L) })
                     .put("annotations", JSONArray().apply {
                         annotations.read(book.id).forEach { note ->
                             put(JSONObject().put("id", note.id).put("chapter", note.chapter).put("start", note.start)
@@ -72,34 +84,58 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
             }
         })
         require(manifest.toString().toByteArray(Charsets.UTF_8).size <= MaxManifestBytes) { "The backup metadata is too large." }
-        val temporary = File(context.cacheDir, "backup-${UUID.randomUUID()}.zip")
-        try {
-            ZipOutputStream(temporary.outputStream().buffered()).use { zip ->
+        context.contentResolver.openOutputStream(destination, "wt")?.use { destinationOutput ->
+            val zipOutput = if (apiKey != null) {
+                onProgress(BackupProgress(BackupProgressStage.ProtectingArchive))
+                BackupEncryption.encryptingOutputStream(
+                    destinationOutput,
+                    requireNotNull(password).toCharArray(),
+                ) { completed, total ->
+                    onProgress(BackupProgress(BackupProgressStage.ProtectingArchive, completed, total))
+                }
+            } else {
+                onProgress(BackupProgress(BackupProgressStage.Preparing, 0L, totalBookBytes))
+                destinationOutput
+            }
+            ZipOutputStream(zipOutput.buffered()).use { zip ->
                 zip.putNextEntry(ZipEntry("manifest.json"))
                 zip.write(manifest.toString().toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
+                var copiedBookBytes = 0L
                 snapshot.first.forEach { book ->
                     coroutineContext.ensureActive()
                     val source = File(book.localPath)
                     require(source.isFile) { "Missing book file: ${book.title}" }
                     zip.putNextEntry(ZipEntry("books/${book.id}"))
-                    source.inputStream().use { it.copyTo(zip) }
+                    source.inputStream().use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            zip.write(buffer, 0, count)
+                            copiedBookBytes += count
+                            if (apiKey == null) onProgress(BackupProgress(BackupProgressStage.Preparing, copiedBookBytes, totalBookBytes))
+                        }
+                    }
                     zip.closeEntry()
                 }
                 val customFont = File(context.filesDir, "reading-font")
                 if (customFont.isFile) {
                     zip.putNextEntry(ZipEntry("settings/reading-font"))
-                    customFont.inputStream().use { it.copyTo(zip) }
+                    customFont.inputStream().use { input ->
+                        val buffer = ByteArray(32 * 1024)
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            zip.write(buffer, 0, count)
+                        }
+                    }
                     zip.closeEntry()
                 }
             }
-            context.contentResolver.openOutputStream(destination, "wt")?.use { output ->
-                temporary.inputStream().use { input ->
-                    if (apiKey != null) BackupEncryption.encrypt(input, output, requireNotNull(password).toCharArray())
-                    else input.copyTo(output)
-                }
-            } ?: error("Could not write the backup file.")
-        } finally { temporary.delete() }
+        } ?: error("Could not write the backup file.")
     }
 
     suspend fun restore(
@@ -107,6 +143,7 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
         password: String? = null,
         replaceExistingSettings: Boolean = false,
         replaceExistingGroqKey: Boolean = false,
+        onProgress: (BackupProgress) -> Unit = {},
     ): Int = withContext(Dispatchers.IO) {
         val archive = File(context.cacheDir, "restore-${UUID.randomUUID()}.zip")
         val transactionId = UUID.randomUUID().toString()
@@ -117,6 +154,7 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
         var encryptedBackup = false
         try {
             check(!hasPendingRestore()) { "An earlier backup restore must be recovered before starting another." }
+            onProgress(BackupProgress(BackupProgressStage.Decrypting, 0L, sourceSize(source)))
             context.contentResolver.openInputStream(source)?.use { input ->
                 archive.outputStream().use { output ->
                     val bounded = object : java.io.FilterOutputStream(output) {
@@ -132,7 +170,11 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
                             out.write(value)
                         }
                     }
-                    encryptedBackup = BackupEncryption.decryptOrLegacy(input, bounded, password?.toCharArray())
+                    encryptedBackup = BackupEncryption.decryptOrPlainZip(
+                        input, bounded, password?.toCharArray(), sourceSize(source)
+                    ) { completed, total ->
+                        onProgress(BackupProgress(BackupProgressStage.Decrypting, completed, total))
+                    }
                     bounded.flush()
                 }
             } ?: error("Could not open this backup.")
@@ -171,11 +213,16 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
 
                 val bookArray = manifest.getJSONArray("books")
                 require(bookArray.length() <= MaxBooks) { "Too many books in this backup." }
+                val validationTotal = (0 until bookArray.length()).sumOf { index ->
+                    val id = bookArray.getJSONObject(index).optString("id")
+                    zip.getEntry("books/$id")?.size?.coerceAtLeast(0L) ?: 0L
+                }
                 val existing = dao.allBooks().map { it.id }.toSet()
                 val seen = mutableSetOf<String>()
                 val validatedBooks = ArrayList<ValidatedRestoreBook>(bookArray.length())
                 var estimatedBytes = 0L
                 var expandedBytes = 0L
+                onProgress(BackupProgress(BackupProgressStage.Validating, 0L, validationTotal))
                 for (index in 0 until bookArray.length()) {
                     coroutineContext.ensureActive()
                     val item = bookArray.getJSONObject(index)
@@ -210,6 +257,7 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
                             expandedBytes = Math.addExact(expandedBytes, count.toLong())
                             require(expandedBytes <= MaxBackupBytes) { "Expanded backup exceeds the size limit." }
                             digest.update(buffer, 0, count)
+                            onProgress(BackupProgress(BackupProgressStage.Validating, expandedBytes, validationTotal))
                         }
                     }
                     require(actualBytes == content.size) { "A book file is incomplete or corrupt." }
@@ -265,6 +313,8 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
                 val restoredBooks = ArrayList<BookEntity>(planned.size)
                 val restoredStates = JSONArray()
                 var expanded = 0L
+                val stagingTotal = planned.sumOf { it.contentEntry.size.coerceAtLeast(0L) }
+                onProgress(BackupProgress(BackupProgressStage.Staging, 0L, stagingTotal))
                 for (item in planned) {
                     coroutineContext.ensureActive()
                     val id = item.id
@@ -282,6 +332,7 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
                                 require(expanded <= MaxBackupBytes) { "Expanded backup exceeds the size limit." }
                                 digest.update(buffer, 0, count)
                                 output.write(buffer, 0, count)
+                                onProgress(BackupProgress(BackupProgressStage.Staging, expanded, stagingTotal))
                             }
                         }
                     }
@@ -319,17 +370,20 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
                 journalWritten = true
 
                 File(context.filesDir, "books").apply { check(isDirectory || mkdirs()) }
-                for (book in restoredBooks) {
+                onProgress(BackupProgress(BackupProgressStage.Publishing, 0L, restoredBooks.size.toLong(), BackupProgressUnit.Books))
+                for ((index, book) in restoredBooks.withIndex()) {
                     coroutineContext.ensureActive()
                     val stagedFile = File(stagedBooks, book.id)
                     val destination = File(book.localPath)
                     require(!destination.exists()) { "A book with this identifier already exists on this device." }
                     moveAtomically(stagedFile, destination)
+                    onProgress(BackupProgress(BackupProgressStage.Publishing, index + 1L, restoredBooks.size.toLong(), BackupProgressUnit.Books))
                 }
                 dao.restoreSnapshot(libraries, restoredBooks)
                 committed = true
                 journal.put("committed", true)
                 writeRestoreJournal(journal)
+                onProgress(BackupProgress(BackupProgressStage.Finalizing))
                 finishRestoreJournal(journal)
                 check(!restoreJournalFile().exists() || restoreJournalFile().delete()) { "Could not clear the completed restore journal." }
                 transactionDir.deleteRecursively()
@@ -587,6 +641,13 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
             output.toString(Charsets.UTF_8.name())
         }
 
+    private fun sourceSize(uri: Uri): Long? = runCatching {
+        if (uri.scheme == "file") return@runCatching uri.path?.let(::File)?.length()
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0).takeIf { it >= 0L } else null
+        }
+    }.getOrNull()
+
     private fun copyBounded(input: java.io.InputStream, output: java.io.OutputStream, maximum: Long): Long {
         var copied = 0L
         val buffer = ByteArray(64 * 1024)
@@ -708,15 +769,19 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
-    private fun sha256(file: File): String {
+    private suspend fun sha256(file: File, onProgress: (Long) -> Unit = {}): String {
         require(file.isFile) { "Missing book file: ${file.name}" }
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().buffered().use { input ->
             val buffer = ByteArray(64 * 1024)
+            var readBytes = 0L
             while (true) {
+                coroutineContext.ensureActive()
                 val count = input.read(buffer)
                 if (count < 0) break
                 digest.update(buffer, 0, count)
+                readBytes += count
+                onProgress(readBytes)
             }
         }
         return digest.digest().toHex()

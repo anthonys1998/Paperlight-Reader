@@ -223,8 +223,13 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
         }
     }
 
-    suspend fun exportBackup(uri: Uri, includeApiKey: Boolean = false, password: String? = null) = withContext(Dispatchers.IO) {
-        withLibraryOperation { LibraryBackup(context, dao).export(uri, includeApiKey, password) }
+    suspend fun exportBackup(
+        uri: Uri,
+        includeApiKey: Boolean = false,
+        password: String? = null,
+        onProgress: (BackupProgress) -> Unit = {},
+    ) = withContext(Dispatchers.IO) {
+        withLibraryOperation { LibraryBackup(context, dao).export(uri, includeApiKey, password, onProgress) }
     }
 
     suspend fun recoverInterruptedBackupRestore() = withContext(Dispatchers.IO) {
@@ -237,9 +242,10 @@ class BookRepository(private val context: Context, private val dao: BookDao) {
         password: String? = null,
         replaceExistingSettings: Boolean = false,
         replaceExistingGroqKey: Boolean = false,
+        onProgress: (BackupProgress) -> Unit = {},
     ): Int = withContext(Dispatchers.IO) {
         withLibraryOperation {
-            LibraryBackup(context, dao).restore(uri, password, replaceExistingSettings, replaceExistingGroqKey)
+            LibraryBackup(context, dao).restore(uri, password, replaceExistingSettings, replaceExistingGroqKey, onProgress)
         }
     }
 

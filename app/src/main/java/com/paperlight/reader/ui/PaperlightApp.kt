@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -62,6 +63,8 @@ import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.PictureAsPdf
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -182,6 +185,7 @@ private fun PaperlightAppContent(
     var deletingLibraryId by remember { mutableStateOf<String?>(null) }
     val libraryBusy by viewModel.libraryBusy.collectAsState()
     val backupRecoveryBlocked by viewModel.backupRecoveryBlocked.collectAsState()
+    val backupProgress by viewModel.backupProgress.collectAsState()
     var libraryError by remember { mutableStateOf<String?>(null) }
     var showStatistics by remember { mutableStateOf(false) }
     var showAccessibility by remember { mutableStateOf(false) }
@@ -190,6 +194,9 @@ private fun PaperlightAppContent(
     var showBackupExportOptions by remember { mutableStateOf(false) }
     var backupIncludeApiKey by remember { mutableStateOf(false) }
     var backupPassword by remember { mutableStateOf("") }
+    var backupPasswordConfirmation by remember { mutableStateOf("") }
+    var backupPasswordVisible by remember { mutableStateOf(false) }
+    var restorePasswordVisible by remember { mutableStateOf(false) }
     var restorePassword by remember { mutableStateOf("") }
     var restoreReplaceSettings by remember { mutableStateOf(false) }
     var restoreReplaceGroqKey by remember { mutableStateOf(false) }
@@ -227,6 +234,8 @@ private fun PaperlightAppContent(
     val exportBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         uri?.let { viewModel.backup(it, restore = false, includeApiKey = backupIncludeApiKey, password = backupPassword.takeIf { backupIncludeApiKey }) }
         backupPassword = ""
+        backupPasswordConfirmation = ""
+        backupPasswordVisible = false
         backupIncludeApiKey = false
     }
     val restoreBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -715,7 +724,30 @@ private fun PaperlightAppContent(
         bottomBar = { Spacer(Modifier.navigationBarsPadding()) }
       ) { padding ->
           Column(Modifier.fillMaxSize().padding(padding)) {
-            if (libraryBusy || folder != null) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (backupProgress != null) {
+                val progress = requireNotNull(backupProgress)
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(progress.stage.label, style = MaterialTheme.typography.bodySmall)
+                            progress.total?.takeIf { it > 0L }?.let { total ->
+                                val position = if (progress.unit == com.paperlight.reader.data.BackupProgressUnit.Bytes) {
+                                    "${formatBackupBytes(progress.completed)} / ${formatBackupBytes(total)}"
+                                } else "${progress.completed} / $total books"
+                                Text(position, style = MaterialTheme.typography.labelSmall)
+                            } ?: if (progress.completed > 0L && progress.unit == com.paperlight.reader.data.BackupProgressUnit.Bytes) {
+                                Text("${formatBackupBytes(progress.completed)} processed", style = MaterialTheme.typography.labelSmall)
+                            } else Unit
+                        }
+                        TextButton(onClick = viewModel::cancelBackup) { Text("Cancel") }
+                    }
+                    val total = progress.total?.takeIf { it > 0L }
+                    if (total != null) LinearProgressIndicator(
+                        progress = { (progress.completed.toFloat() / total).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) else LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+            } else if (libraryBusy || folder != null) LinearProgressIndicator(Modifier.fillMaxWidth())
             conversionProgress?.let { (completed, total) ->
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -926,13 +958,21 @@ private fun PaperlightAppContent(
     if (showGroqApiKeyScreen) GroqApiKeyScreen(onClose = { showGroqApiKeyScreen = false })
     if (showBackupExportOptions) {
         AlertDialog(
-            onDismissRequest = { showBackupExportOptions = false; backupPassword = "" },
+            onDismissRequest = {
+                showBackupExportOptions = false
+                backupPassword = ""
+                backupPasswordConfirmation = ""
+                backupPasswordVisible = false
+            },
             title = { Text("Export app backup") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Includes library books, reading data, annotations, supported app settings, saved note summaries, and custom fonts. Website conversion checkpoints and custom discovery sources are not included yet.")
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = backupIncludeApiKey, onCheckedChange = { backupIncludeApiKey = it; if (!it) backupPassword = "" })
+                        Checkbox(checked = backupIncludeApiKey, onCheckedChange = {
+                            backupIncludeApiKey = it
+                            if (!it) { backupPassword = ""; backupPasswordConfirmation = "" }
+                        })
                         Text("Include Groq API key (password-encrypted)")
                     }
                     if (backupIncludeApiKey) OutlinedTextField(
@@ -940,28 +980,60 @@ private fun PaperlightAppContent(
                         onValueChange = { backupPassword = it.take(256) },
                         label = { Text("Backup password (12+ characters)") },
                         singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (backupPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { backupPasswordVisible = !backupPasswordVisible }) {
+                                Icon(if (backupPasswordVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                    if (backupPasswordVisible) "Hide password" else "Show password")
+                            }
+                        },
+                    )
+                    if (backupIncludeApiKey) OutlinedTextField(
+                        value = backupPasswordConfirmation,
+                        onValueChange = { backupPasswordConfirmation = it.take(256) },
+                        label = { Text("Confirm backup password") },
+                        singleLine = true,
+                        isError = backupPasswordConfirmation.isNotEmpty() && backupPasswordConfirmation != backupPassword,
+                        supportingText = {
+                            if (backupPasswordConfirmation.isNotEmpty() && backupPasswordConfirmation != backupPassword)
+                                Text("Passwords do not match.")
+                        },
+                        visualTransformation = if (backupPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     )
                 }
             },
             confirmButton = {
-                TextButton(enabled = !backupIncludeApiKey || backupPassword.length >= 12, onClick = {
+                TextButton(enabled = !backupIncludeApiKey ||
+                    (backupPassword.length >= 12 && backupPassword == backupPasswordConfirmation), onClick = {
                     showBackupExportOptions = false
                     exportBackup.launch(if (backupIncludeApiKey) "VibeReader-protected-backup.vrb" else "VibeReader-backup.zip")
                 }) { Text("Choose destination") }
             },
-            dismissButton = { TextButton(onClick = { showBackupExportOptions = false; backupPassword = "" }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = {
+                showBackupExportOptions = false
+                backupPassword = ""
+                backupPasswordConfirmation = ""
+                backupPasswordVisible = false
+            }) { Text("Cancel") } },
         )
     }
     pendingRestore?.let { uri ->
-        AlertDialog(onDismissRequest = { pendingRestore = null; restorePassword = "" }, title = { Text("Restore backup?") },
+        AlertDialog(onDismissRequest = { pendingRestore = null; restorePassword = ""; restorePasswordVisible = false }, title = { Text("Restore backup?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Books already present will be skipped. Missing settings and summaries are added. Choose below whether to replace existing settings or the saved Groq key. Enter a password only for an encrypted backup.")
                     OutlinedTextField(value = restorePassword, onValueChange = { restorePassword = it.take(256) },
                         label = { Text("Backup password (if protected)") }, singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                        visualTransformation = if (restorePasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { restorePasswordVisible = !restorePasswordVisible }) {
+                                Icon(if (restorePasswordVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                    if (restorePasswordVisible) "Hide password" else "Show password")
+                            }
+                        })
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = restoreReplaceSettings, onCheckedChange = { restoreReplaceSettings = it })
                         Text("Replace existing app settings")
@@ -982,8 +1054,9 @@ private fun PaperlightAppContent(
                     replaceExistingGroqKey = restoreReplaceGroqKey,
                 )
                 restorePassword = ""
+                restorePasswordVisible = false
             }) { Text("Restore") } },
-            dismissButton = { TextButton(onClick = { pendingRestore = null; restorePassword = "" }) { Text("Cancel") } })
+            dismissButton = { TextButton(onClick = { pendingRestore = null; restorePassword = ""; restorePasswordVisible = false }) { Text("Cancel") } })
     }
     opened?.let {
         AlertDialog(
@@ -1423,4 +1496,10 @@ private fun BookListRow(book: BookEntity, recent: Boolean, selected: Boolean, on
         modifier = Modifier.semantics { this.selected = selected }.combinedClickable(role = Role.Button, onClick = onClick, onLongClick = onLongClick)
     )
     HorizontalDivider()
+}
+
+private fun formatBackupBytes(value: Long): String = when {
+    value >= 1024L * 1024L -> "%.1f MB".format(value / (1024.0 * 1024.0))
+    value >= 1024L -> "%.0f KB".format(value / 1024.0)
+    else -> "$value B"
 }
