@@ -365,7 +365,7 @@ internal class LibraryBackup(private val context: Context, private val dao: Book
                     .put("groqKeyEncrypted", encryptedGroqValue ?: JSONObject.NULL)
                     .put("fontIncluded", stagedFont != null)
                     .put("applyFont", applyFont)
-                    .put("fontSha256", stagedFont?.let(::sha256).orEmpty())
+                    .put("fontSha256", if (stagedFont != null) sha256(stagedFont) else "")
                 writeRestoreJournal(journal)
                 journalWritten = true
 

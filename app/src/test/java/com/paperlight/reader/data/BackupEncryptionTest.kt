@@ -81,7 +81,7 @@ class BackupEncryptionTest {
                 }
             }
             assertEquals(source.length(), restored.length())
-            assertEquals(source.length(), decryptedProgress)
+            assertEquals(encrypted.length(), decryptedProgress)
             assertArrayEquals(sha256(source), sha256(restored))
         } finally {
             directory.deleteRecursively()
@@ -103,6 +103,7 @@ class BackupEncryptionTest {
         assertThrows(IllegalArgumentException::class.java) { decrypt(valid + byteArrayOf(1)) }
         assertThrows(IllegalArgumentException::class.java) { decrypt(swapFirstTwoChunks(valid)) }
         assertThrows(IllegalArgumentException::class.java) { decrypt(duplicateFirstChunk(valid)) }
+        Unit
     }
 
     @Test
@@ -119,6 +120,7 @@ class BackupEncryptionTest {
             }
         }
         assertThrows(IllegalArgumentException::class.java) { decrypt(output.toByteArray()) }
+        Unit
     }
 
     @Test
@@ -161,8 +163,12 @@ class BackupEncryptionTest {
     fun plainZipBytesAreCopiedWithoutPassword() = runBlocking {
         val plainZip = byteArrayOf(0x50, 0x4b, 0x03, 0x04, 1, 2, 3)
         val restored = ByteArrayOutputStream()
-        assertFalse(BackupEncryption.decryptOrPlainZip(ByteArrayInputStream(plainZip), restored, null))
+        var copiedBytes = 0L
+        assertFalse(BackupEncryption.decryptOrPlainZip(ByteArrayInputStream(plainZip), restored, null) { completed, _ ->
+            copiedBytes = completed
+        })
         assertArrayEquals(plainZip, restored.toByteArray())
+        assertEquals(plainZip.size.toLong(), copiedBytes)
     }
 
     private fun decrypt(bytes: ByteArray): ByteArray = runBlocking {

@@ -113,7 +113,7 @@ internal object BackupEncryption {
             }
             password?.fill('\u0000')
             output.write(prefix, 0, prefixCount)
-            copyWithProgress(data, output, totalBytes, onProgress)
+            copyWithProgress(data, output, totalBytes, initialBytes = prefixCount.toLong(), onProgress = onProgress)
             return false
         }
 
@@ -143,8 +143,8 @@ internal object BackupEncryption {
             }
 
             var chunkIndex = 0L
-            var totalWritten = 0L
-            onProgress(0L, totalBytes)
+            var sourceBytesRead = HeaderBytes.toLong() + encryptedCheck.size
+            onProgress(sourceBytesRead, totalBytes)
             while (true) {
                 coroutineContext.ensureActive()
                 val length = try {
@@ -152,11 +152,13 @@ internal object BackupEncryption {
                 } catch (failure: EOFException) {
                     throw IllegalArgumentException("The encrypted backup is truncated; its authenticated end marker is missing.", failure)
                 }
+                sourceBytesRead += Int.SIZE_BYTES
                 if (length == 0) {
                     require(chunkIndex < Int.MAX_VALUE.toLong() - 1L) { "The backup contains too many encrypted chunks." }
                     val endIndex = chunkIndex + 1L
                     val tag = ByteArray(TagBytes)
                     readFullyOrCorrupt(data, tag)
+                    sourceBytesRead += tag.size
                     try {
                         aead(Cipher.DECRYPT_MODE, key, nonce(noncePrefix, endIndex.toInt()),
                             recordAad(header, type = 2, index = endIndex, length = 0)).doFinal(tag)
@@ -164,6 +166,7 @@ internal object BackupEncryption {
                         throw IllegalArgumentException("The encrypted backup is damaged or has been modified.", failure)
                     }
                     require(data.read() == -1) { "The encrypted backup contains unexpected trailing data." }
+                    onProgress(sourceBytesRead, totalBytes)
                     break
                 }
 
@@ -172,6 +175,7 @@ internal object BackupEncryption {
                 val index = chunkIndex + 1L
                 val encrypted = ByteArray(length + TagBytes)
                 readFullyOrCorrupt(data, encrypted)
+                sourceBytesRead += encrypted.size
                 val plain = try {
                     aead(Cipher.DECRYPT_MODE, key, nonce(noncePrefix, index.toInt()),
                         recordAad(header, type = 1, index = index, length = length)).doFinal(encrypted)
@@ -181,12 +185,11 @@ internal object BackupEncryption {
                 require(plain.size == length) { "The encrypted backup contains an invalid chunk." }
                 try {
                     output.write(plain)
-                    totalWritten += plain.size
                 } finally {
                     Arrays.fill(plain, 0.toByte())
                 }
                 chunkIndex = index
-                onProgress(totalWritten, totalBytes)
+                onProgress(sourceBytesRead, totalBytes)
             }
             output.flush()
             return true
@@ -246,11 +249,12 @@ internal object BackupEncryption {
         input: InputStream,
         output: OutputStream,
         totalBytes: Long?,
+        initialBytes: Long = 0L,
         onProgress: (Long, Long?) -> Unit,
     ) {
         val buffer = ByteArray(ChunkBytes)
-        var copied = 0L
-        onProgress(0L, totalBytes)
+        var copied = initialBytes
+        onProgress(copied, totalBytes)
         while (true) {
             coroutineContext.ensureActive()
             val count = readChunk(input, buffer)
