@@ -18,6 +18,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowStatFs
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
@@ -34,6 +35,8 @@ class LibraryBackupRestoreTest {
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
+        // Robolectric defaults to zero filesystem capacity unless explicitly configured.
+        ShadowStatFs.registerStats(context.filesDir, 1_000_000, 500_000, 500_000)
         database = Room.inMemoryDatabaseBuilder(context, BookDatabase::class.java)
             .allowMainThreadQueries()
             .build()
@@ -74,6 +77,21 @@ class LibraryBackupRestoreTest {
         val readerSettings = context.getSharedPreferences("reader", Context.MODE_PRIVATE)
         assertEquals(18, readerSettings.getInt("fontSize", 0))
         assertEquals(1.25f, readerSettings.getFloat("lineSpacing", 0f), 0f)
+        assertFalse(backup.hasPendingRestore())
+    }
+
+    @Test
+    fun insufficientStorageRejectsRestoreBeforePublishingBooks() = runBlocking {
+        ShadowStatFs.registerStats(context.filesDir, 1_000_000, 0, 0)
+        val contents = "a staged text book".toByteArray()
+        val archive = createArchive(bookManifest("low-space", contents), mapOf("books/low-space" to contents))
+
+        val failure = runCatching { backup.restore(Uri.fromFile(archive)) }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertTrue(failure?.message.orEmpty().contains("not enough free storage"))
+        assertNull(database.bookDao().bookById("low-space"))
+        assertFalse(File(context.filesDir, "books/low-space.txt").exists())
         assertFalse(backup.hasPendingRestore())
     }
 
