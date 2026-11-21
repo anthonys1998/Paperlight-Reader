@@ -38,21 +38,29 @@ jobs:
         if: failure()
         shell: python
         run: |
-          import os, pathlib, re
+          import os, pathlib, re, xml.etree.ElementTree as ET
           log = pathlib.Path(os.environ['RUNNER_TEMP']) / 'build-debug.log'
           if log.exists():
-              matches = [line for line in log.read_text(errors='replace').splitlines()
-                         if re.search(r'Resource missing|Could not|could not|Could not GET|Could not HEAD|Received status code|^e:|^> |not found|FAILURE:', line)]
-              for line in matches[-25:]:
-                  escaped = line.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-                  print(f'::warning title=Build diagnostic::{escaped}')
+              lines = log.read_text(errors='replace').splitlines()
+              starts = [i for i, line in enumerate(lines) if 'FAILURE: Build failed' in line]
+              details = '\n'.join(lines[starts[-1]:starts[-1] + 65] if starts else lines[-65:])
+              escaped = details[:12000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::warning title=Build failure summary::{escaped}')
+          for report in pathlib.Path('app/build/test-results').rglob('TEST-*.xml'):
+              for case in ET.parse(report).iter('testcase'):
+                  for failure in list(case.findall('failure')) + list(case.findall('error')):
+                      details = f"{case.get('classname')}.{case.get('name')}: {failure.get('message')}\n{failure.text or ''}"
+                      escaped = details[:6000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                      print(f'::warning title=Failed unit test::{escaped}')
 
       - name: Upload build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-diagnostics
-          path: ${{ runner.temp }}/build-debug.log
+          path: |
+            ${{ runner.temp }}/build-debug.log
+            app/build/test-results/
           if-no-files-found: ignore
 
       - name: Upload debug APK
